@@ -188,7 +188,7 @@ class MainActivity : AppCompatActivity() {
             }
             AlgorithmType.TRACKING -> {
                 // First run object detection to get detection results without drawing
-                val detectionTime = objectDetectionSample.processObjectDetectionWithoutDrawing(bitmap, w, h)
+                val detectionTime = objectDetectionSample.processObjectDetectionWithoutDrawing(bitmap, w, h, threshold = 0.1f, iou = 1.0f)
                 val detectionResults = objectDetectionSample.getDetectionResults(bitmap)
                 // Then run tracking with the detection results and draw the tracking results
                 val trackingTime = trackerSample.processTrackingWithDetections(canvas, paint2, w, h, detectionResults)
