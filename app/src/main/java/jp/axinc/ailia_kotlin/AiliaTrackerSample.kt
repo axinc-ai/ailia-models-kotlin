@@ -5,7 +5,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PointF
 import android.util.Log
-import axip.ailia_tracker.AiliaTracker
+import axip.ailia_tracker.*
 
 class AiliaTrackerSample {
     companion object {
@@ -23,8 +23,9 @@ class AiliaTrackerSample {
             if (isInitialized) {
                 releaseTracker()
             }
-            
-            tracker = AiliaTracker()
+
+            var settings: AiliaTrackerSettings = AiliaTrackerSettings(score_threshold = 0.1f, nms_threshold = 0.7f, track_threshold = 0.5f, track_buffer = 30, match_threshold = 0.8f)
+            tracker = AiliaTracker(algorithm = AiliaTracker.AILIA_TRACKER_ALGORITHM_BYTE_TRACK, settings = settings)
             isInitialized = true
             Log.i(TAG, "Tracker initialized successfully")
             true
@@ -72,9 +73,7 @@ class AiliaTrackerSample {
                 }
             }
 
-            val threshold: Float = 0.1f;
-            val iou:Float = 0.7f;
-            val computeResult = tracker!!.compute(threshold, iou)
+            val computeResult = tracker!!.compute()
             if (computeResult == 0) {
                 Log.d(TAG, "Successfully computed tracking")
 

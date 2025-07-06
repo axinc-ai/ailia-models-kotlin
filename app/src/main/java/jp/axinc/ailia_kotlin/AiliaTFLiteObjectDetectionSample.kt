@@ -152,7 +152,7 @@ class AiliaTFLiteObjectDetectionSample {
         }
     }
 
-    fun processObjectDetectionWithoutDrawing(bitmap: Bitmap, w: Int, h: Int): Long {
+    fun processObjectDetectionWithoutDrawing(bitmap: Bitmap, w: Int, h: Int, threshold: Float = 0.25f, iou: Float = 0.45f): Long {
         if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
             Log.e(TAG, "Object detection not initialized properly")
             return -1
@@ -196,7 +196,7 @@ class AiliaTFLiteObjectDetectionSample {
             val dummyPaint = Paint()
             val dummyTextPaint = Paint()
 
-            lastDetectionResults = postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, dummyCanvas, dummyPaint, dummyTextPaint, w, h)
+            lastDetectionResults = postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, dummyCanvas, dummyPaint, dummyTextPaint, w, h, threshold, iou)
 
             return (endTime - startTime) / 1000000
         } catch (e: Exception) {
@@ -206,7 +206,7 @@ class AiliaTFLiteObjectDetectionSample {
         }
     }
 
-    fun processObjectDetection(bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int): Long {
+    fun processObjectDetection(bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int, threshold: Float = 0.25f, iou: Float = 0.45f): Long {
         if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
             Log.e(TAG, "Object detection not initialized properly")
             return -1
@@ -244,7 +244,7 @@ class AiliaTFLiteObjectDetectionSample {
                 return -1
             }
 
-            lastDetectionResults = postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, text, w, h)
+            lastDetectionResults = postProcessYolox(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint, canvas, paint, text, w, h, threshold, iou)
 
             return (endTime - startTime) / 1000000
         } catch (e: Exception) {
@@ -290,7 +290,9 @@ class AiliaTFLiteObjectDetectionSample {
         paint: Paint,
         text: Paint,
         originalW: Int,
-        originalH: Int
+        originalH: Int,
+        threshold: Float,
+        iou: Float
     ): List<AiliaTrackerSample.DetectionResult> {
         val ih = inputShape[1]
         val iw = inputShape[2]
@@ -328,8 +330,7 @@ class AiliaTFLiteObjectDetectionSample {
                     val c = dequantUint8(outputBuffer[bufIndex + 4], quantScale, quantZeroPoint, outputTensorType)
                     score *= c
 
-                    val detThreshold = 0.25f
-                    if (score >= detThreshold) {
+                    if (score >= threshold) {
                         val cx = dequantUint8(outputBuffer[bufIndex + 0], quantScale, quantZeroPoint, outputTensorType)
                         val cy = dequantUint8(outputBuffer[bufIndex + 1], quantScale, quantZeroPoint, outputTensorType)
                         val w = dequantUint8(outputBuffer[bufIndex + 2], quantScale, quantZeroPoint, outputTensorType)
@@ -352,7 +353,7 @@ class AiliaTFLiteObjectDetectionSample {
         }
 
         // Apply NMS
-        val selectedIndices = applyNMS(boxes, scores, 0.25f, 0.45f)  // threshold and IOU threshold values
+        val selectedIndices = applyNMS(boxes, scores, threshold, iou)  // threshold and IOU threshold values
 
         for (i in selectedIndices) {
             val bbox = boxes[i]
