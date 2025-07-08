@@ -319,7 +319,14 @@ class AiliaTFLiteObjectDetectionSample {
                     var maxClass = 0
 
                     for (cls in 0 until CocoAndImageNetLabels.COCO_CATEGORY.size) {
-                        val score = outputBuffer[bufIndex + 5 + cls].toInt() and 0xFF // Byte -> Int -> UByte
+                        var score = 0;
+                        if (outputTensorType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8) {
+                            score =
+                                outputBuffer[bufIndex + 5 + cls].toInt() // Byte -> Int
+                        } else {
+                            score =
+                                outputBuffer[bufIndex + 5 + cls].toInt() and 0xFF // Byte -> Int -> UByte
+                        }
                         if (score > maxScore) {
                             maxScore = score
                             maxClass = cls
