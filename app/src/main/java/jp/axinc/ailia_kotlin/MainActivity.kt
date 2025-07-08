@@ -351,7 +351,8 @@ class MainActivity : AppCompatActivity() {
                     isInitialized = poseEstimatorSample.initializePoseEstimator(selectedEnv!!.id, proto, model)
                 }
                 AlgorithmType.OBJECT_DETECTION -> {
-                    val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+                    //val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+                    val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_s)
                     isInitialized = objectDetectionSample.initializeObjectDetection(yoloxModel, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)
                 }
                 AlgorithmType.CLASSIFICATION -> {
@@ -362,7 +363,8 @@ class MainActivity : AppCompatActivity() {
                     isInitialized = tokenizerSample.initializeTokenizer()
                 }
                 AlgorithmType.TRACKING -> {
-                    val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+                    //val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
+                    val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_s)
                     if (objectDetectionSample.initializeObjectDetection(yoloxModel, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)) {
                         isInitialized = trackerSample.initializeTracker()
                     }
