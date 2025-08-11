@@ -202,8 +202,11 @@ class MainActivity : AppCompatActivity() {
                 detectionTime + trackingTime
             }
             AlgorithmType.SPEECH_TO_TEXT -> {
-                var audio : WavFileData = loadRawAudio(R.id.demo)
-                //speechSample.process()
+                var audio : WavFileData = loadRawAudio(R.raw.demo)
+                var text : String = speechSample.process(audio.audioData, audio.channels, audio.sampleRate)
+                runOnUiThread {
+                    classificationResultTextView.text = "Speech Results: $text"
+                }
                 0
             }
         }
@@ -254,6 +257,17 @@ class MainActivity : AppCompatActivity() {
                 tokenizerInputEditText.visibility = View.GONE
                 tokenizerOutputTextView.visibility = View.GONE
                 trackingResultTextView.visibility = View.VISIBLE
+                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
+                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
+            }
+            AlgorithmType.SPEECH_TO_TEXT -> {
+                imageView.visibility = View.GONE
+                cameraPreviewView.visibility = View.GONE
+                resultScrollView.visibility = View.VISIBLE
+                classificationResultTextView.visibility = View.VISIBLE
+                tokenizerInputEditText.visibility = View.GONE
+                tokenizerOutputTextView.visibility = View.GONE
+                trackingResultTextView.visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
             }

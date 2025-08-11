@@ -8,6 +8,7 @@ import java.net.URL
 import java.nio.file.Files
 
 import axip.ailia_speech.AiliaSpeech
+import axip.ailia_speech.AiliaSpeechText
 
 class AiliaSpeechSample {
     private var speech: AiliaSpeech? = null
@@ -49,37 +50,25 @@ class AiliaSpeechSample {
         }
     }
 
-    fun process() {
-
-    }
-
-    /*
-    fun processTokenization(text: String): Long {
-        if (!isInitialized || tokenizer == null) {
-            Log.e("AILIA_Error", "Tokenizer not initialized")
-            return -1
+    fun process(audio: FloatArray, channels: Int, sampleRate: Int) : String{
+        speech?.pushInputData(audio, channels, audio.size / channels, sampleRate)
+        speech?.finalizeInputData()
+        speech?.transcribe()
+        var count : Int? = speech?.getTextCount()
+        if (count == null){
+            return ""
         }
-
-        return try {
-            val startTime = System.nanoTime()
-            
-            val tokens = tokenizer!!.encode(text)
-            var tokensText = ""
-            for (i in tokens.indices) {
-                tokensText += "${tokens[i]}"
-                if (i < tokens.size - 1) tokensText += ", "
+        var ret = ""
+        for (i in 0 until count) {
+            var text : AiliaSpeechText? = speech?.getText(i)
+            if (text == null){
+                continue
             }
-            lastTokenizationResult = tokensText
-            Log.i("AILIA_Main", "Tokens: $tokensText")
-            
-            val endTime = System.nanoTime()
-            (endTime - startTime) / 1000000
-        } catch (e: Exception) {
-            Log.e("AILIA_Error", "Failed to process tokenization: ${e.javaClass.name}: ${e.message}")
-            -1
+            ret = ret + text.text + "\n"
         }
+        speech?.resetTranscribeState()
+        return ret
     }
-    */
 
     fun releaseSpeech() {
         try {
@@ -92,10 +81,4 @@ class AiliaSpeechSample {
             Log.i("AILIA_Main", "Speech released")
         }
     }
-
-    /*
-    fun getLastTokenizationResult(): String {
-        return lastTokenizationResult
-    }
-    */
 }
