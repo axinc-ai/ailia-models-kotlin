@@ -10,33 +10,57 @@ import java.nio.file.Files
 import axip.ailia_speech.AiliaSpeech
 import axip.ailia_speech.AiliaSpeechText
 
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+
 class AiliaSpeechSample {
     private var speech: AiliaSpeech? = null
     private var isInitialized = false
     private var lastTokenizationResult: String = ""
 
-    fun download(link : String, name : String): String {
-        val dir : String = Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS).absolutePath
-        val path : String = dir + "/" + name
+    fun download(link: String, name: String): String {
+        val dir: String = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
+        val path: String = "$dir/$name"
         try {
             if (File(path).exists()) {
-                return path;
+                return path
             }
             URL(link).openStream().copyTo(FileOutputStream(File(path)))
         } catch (e: Exception) {
-            Log.e("AILIA", "Cancel", e)
+            Log.e("AILIA_Main", "Model Download Failed", e)
+            return ""
         }
         return path
     }
 
     fun initializeSpeech(): Boolean {
+        val executor = Executors.newFixedThreadPool(2)
+
         return try {
-            var encoder_path : String = download("https://storage.googleapis.com/ailia-models/whisper/encoder_tiny.opt3.onnx", "encoder_tiny.onnx")
-            var decoder_path : String  = download("https://storage.googleapis.com/ailia-models/whisper/decoder_tiny_fix_kv_cache.opt3.onnx", "decoder_tiny.onnx")
+            Log.i("AILIA_Main", "Begin model download")
+            val encoderFuture: Future<String> = executor.submit(Callable {
+                download("https://storage.googleapis.com/ailia-models/whisper/encoder_tiny.opt3.onnx", "encoder_tiny.onnx")
+            })
+
+            val decoderFuture: Future<String> = executor.submit(Callable {
+                download("https://storage.googleapis.com/ailia-models/whisper/decoder_tiny_fix_kv_cache.opt3.onnx", "decoder_tiny.onnx")
+            })
+
+            val encoder_path = encoderFuture.get() // Blocking call
+            val decoder_path = decoderFuture.get() // Blocking call
+            Log.i("AILIA_Main", "End model download")
+
+            if (encoder_path == "" || decoder_path == ""){
+                Log.e("AILIA_Main", "Model download failed")
+            }
 
             if (isInitialized) {
                 releaseSpeech()
             }
+
+            Log.i("AILIA_Main", encoder_path)
+            Log.i("AILIA_Main", decoder_path)
 
             speech = AiliaSpeech(AiliaSpeech.AILIA_SPEECH_TASK_TRANSCRIBE)
             speech?.openModel(encoder_path, decoder_path, AiliaSpeech.AILIA_SPEECH_MODEL_TYPE_WHISPER_MULTILINGUAL_TINY)

@@ -116,7 +116,8 @@ class MainActivity : AppCompatActivity() {
             "ObjectDetection", 
             "Tracking",
             "Tokenize",
-            "Classification"
+            "Classification",
+            "Text2Speech",
         )
         
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, algorithms)
