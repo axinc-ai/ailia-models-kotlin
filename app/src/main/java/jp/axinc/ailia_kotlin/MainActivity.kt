@@ -46,6 +46,7 @@ class MainActivity : AppCompatActivity() {
     private var classificationSample = AiliaTFLiteClassificationSample()
     private var tokenizerSample = AiliaTokenizerSample()
     private var trackerSample = AiliaTrackerSample()
+    private var speechSample = AiliaSpeechSample()
     
     private var selectedEnv: AiliaEnvironment? = null
     private var isInitialized = false
@@ -65,7 +66,8 @@ class MainActivity : AppCompatActivity() {
         OBJECT_DETECTION,
         TRACKING,
         TOKENIZE,
-        CLASSIFICATION
+        CLASSIFICATION,
+        SPEECH_TO_TEXT,
     }
     
     companion object {
@@ -198,6 +200,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 detectionTime + trackingTime
             }
+            AlgorithmType.SPEECH_TO_TEXT -> {
+                speechSample.process()
+            }
         }
     }
     
@@ -296,6 +301,7 @@ class MainActivity : AppCompatActivity() {
             classificationSample.releaseClassification()
             tokenizerSample.releaseTokenizer()
             trackerSample.releaseTracker()
+            speechSample.releaseSpeech()
         } catch (e: Exception) {
             Log.e("AILIA_Error", "Error releasing algorithms: ${e.message}")
         }
@@ -368,6 +374,9 @@ class MainActivity : AppCompatActivity() {
                     if (objectDetectionSample.initializeObjectDetection(yoloxModel, env = AiliaTFLite.AILIA_TFLITE_ENV_NNAPI)) {
                         isInitialized = trackerSample.initializeTracker()
                     }
+                }
+                AlgorithmType.SPEECH_TO_TEXT -> {
+                    isInitialized = speechSample.initializeSpeech()
                 }
             }
             
