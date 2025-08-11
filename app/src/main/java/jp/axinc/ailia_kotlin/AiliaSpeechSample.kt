@@ -49,7 +49,7 @@ class AiliaSpeechSample {
         }
     }
 
-    fun Process() {
+    fun process() {
 
     }
 

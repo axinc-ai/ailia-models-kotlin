@@ -22,6 +22,7 @@ import axip.ailia.*
 import axip.ailia_tflite.*
 import java.io.*
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -201,7 +202,9 @@ class MainActivity : AppCompatActivity() {
                 detectionTime + trackingTime
             }
             AlgorithmType.SPEECH_TO_TEXT -> {
-                speechSample.process()
+                var audio : WavFileData = loadRawAudio(R.id.demo)
+                //speechSample.process()
+                0
             }
         }
     }
@@ -757,5 +760,52 @@ class MainActivity : AppCompatActivity() {
             out.writeByte(i shr 24 and 0xff)
         }
         return bout.toByteArray()
+    }
+
+    data class WavFileData(
+        val sampleRate: Int,
+        val channels: Int,
+        val audioData: FloatArray
+    )
+
+    fun loadRawAudio(resId: Int): WavFileData {
+        val inputStream: InputStream = this.resources.openRawResource(resId)
+        inputStream.use {
+            val header = ByteArray(44)
+            // Read the WAV file header
+            if (inputStream.read(header, 0, 44) != 44) {
+                throw IllegalArgumentException("Invalid WAV file")
+            }
+
+            // Extract necessary information
+            val audioFormat = ByteBuffer.wrap(header, 20, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
+            val channels = ByteBuffer.wrap(header, 22, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
+            val sampleRate = ByteBuffer.wrap(header, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val bitsPerSample = ByteBuffer.wrap(header, 34, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
+
+            if (audioFormat != 1 || bitsPerSample != 16) {
+                throw IllegalArgumentException("Unsupported WAV format: Only PCM 16-bit is supported.")
+            }
+
+            val byteRate = sampleRate * channels * bitsPerSample / 8
+            val dataSize = ByteBuffer.wrap(header, 40, 4).order(ByteOrder.LITTLE_ENDIAN).int
+
+            // Read the PCM data
+            val pcmData = ByteArray(dataSize)
+            if (inputStream.read(pcmData) != dataSize) {
+                throw RuntimeException("Failed to read the PCM data.")
+            }
+
+            // Convert the byte data to a float array
+            val numSamples = dataSize / 2
+            val floatArray = FloatArray(numSamples)
+            val buffer = ByteBuffer.wrap(pcmData).order(ByteOrder.LITTLE_ENDIAN)
+            for (i in 0 until numSamples) {
+                val sample = buffer.short / 32768.0f // normalize to [-1.0, 1.0]
+                floatArray[i] = sample
+            }
+
+            return WavFileData(sampleRate = sampleRate, channels = channels, audioData = floatArray)
+        }
     }
 }
