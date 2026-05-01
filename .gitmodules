@@ -1,24 +1,24 @@
 [submodule "ailia-sdk-jni"]
 	path = ailia-sdk-jni
-	url = git@github.com:ailia-ai/ailia-sdk-jni.git
+	url = https://github.com/ailia-ai/ailia-sdk-jni.git
 [submodule "ailia-tokenizer-jni"]
 	path = ailia-tokenizer-jni
-	url = git@github.com:ailia-ai/ailia-tokenizer-jni.git
+	url = https://github.com/ailia-ai/ailia-tokenizer-jni.git
 [submodule "ailia-tflite-jni"]
 	path = ailia-tflite-jni
-	url = git@github.com:ailia-ai/ailia-tflite-jni.git
+	url = https://github.com/ailia-ai/ailia-tflite-jni.git
 [submodule "ailia-tracker-jni"]
 	path = ailia-tracker-jni
-	url = git@github.com:ailia-ai/ailia-tracker-jni.git
+	url = https://github.com/ailia-ai/ailia-tracker-jni.git
 [submodule "ailia-speech-jni"]
 	path = ailia-speech-jni
-	url = git@github.com:ailia-ai/ailia-speech-jni.git
+	url = https://github.com/ailia-ai/ailia-speech-jni.git
 [submodule "ailia-voice-jni"]
 	path = ailia-voice-jni
 	url = https://github.com/ailia-ai/ailia-voice-jni.git
 [submodule "ailia-llm-jni"]
 	path = ailia-llm-jni
-	url = git@github.com:ailia-ai/ailia-llm-jni.git
+	url = https://github.com/ailia-ai/ailia-llm-jni.git
 [submodule "ailia-audio-jni"]
 	path = ailia-audio-jni
 	url = https://github.com/ailia-ai/ailia-audio-jni.git
