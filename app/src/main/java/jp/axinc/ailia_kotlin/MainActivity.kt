@@ -129,9 +129,11 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         // Android 15 (targetSdk 35) 以降はエッジツーエッジが強制されるため、
-        // システムバー/ディスプレイカットアウトのインセットを上下左右のpaddingとして適用する
-        val rootView = findViewById<View>(android.R.id.content)
-        ViewCompat.setOnApplyWindowInsetsListener(rootView) { v, insets ->
+        // システムバー/ディスプレイカットアウトのインセットを上下左右のpaddingとして適用する。
+        // ActionBar が消費した後の残りのインセット(ステータスバー分は消費済み)を
+        // コンテンツのルートに反映することで、ナビゲーションバー/ノッチとの被りを防ぐ。
+        val rootLayout = findViewById<View>(R.id.rootLayout)
+        ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { v, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
             )
