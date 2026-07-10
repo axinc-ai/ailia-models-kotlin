@@ -21,6 +21,8 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import axip.ailia.*
 import axip.ailia_tflite.*
 import axip.ailia_llm.AiliaLLM
@@ -125,6 +127,19 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        // Android 15 (targetSdk 35) 以降はエッジツーエッジが強制されるため、
+        // システムバー/ディスプレイカットアウトのインセットを上下左右のpaddingとして適用する。
+        // ActionBar が消費した後の残りのインセット(ステータスバー分は消費済み)を
+        // コンテンツのルートに反映することで、ナビゲーションバー/ノッチとの被りを防ぐ。
+        val rootLayout = findViewById<View>(R.id.rootLayout)
+        ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { v, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
 
         // cameraExecutorはsetupModeSelection()より先に初期化する必要がある
         // (SpinnerのonItemSelectedでinitializeAilia()が呼ばれるため)
