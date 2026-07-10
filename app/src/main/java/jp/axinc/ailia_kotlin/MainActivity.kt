@@ -246,6 +246,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // 初回起動時、最初のモデル初期化より前にデフォルトのenv(GPU等)を確定させる。
+        // これを行わないと selectedEnvId=0 のまま初期化され、後から遅延実行される
+        // algorithmSpinner の onItemSelected が envスピナーの表示だけをデフォルト値に
+        // 更新するため「表示env≠実際に使われるenv」の不一致が起きる。
+        updateRuntimeSpinner(currentAlgorithm)
+        updateEnvSpinner(currentAlgorithm)
+
         switchToImageMode()
     }
 
@@ -846,6 +853,16 @@ class MainActivity : AppCompatActivity() {
                 waveformImageView.visibility = View.GONE
                 waveformInfoTextView.visibility = View.GONE
             }
+        }
+
+        // カメラモードでは処理結果(imageView)を表示領域いっぱいに拡大(centerCrop)して、
+        // 上下の帯(正方形クロップのfitCenterでできる透明余白から背面のライブプレビューが
+        // 透けて見える現象)を解消する。imageViewが不透明な結果画像で領域全体を覆うため、
+        // 背面のcameraPreviewViewも隠れる。画像モードでは全体を欠けなく見せるためfitCenter。
+        if (isCameraMode) {
+            imageView.scaleType = ImageView.ScaleType.CENTER_CROP
+        } else {
+            imageView.scaleType = ImageView.ScaleType.FIT_CENTER
         }
     }
 
