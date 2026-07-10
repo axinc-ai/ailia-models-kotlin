@@ -854,6 +854,16 @@ class MainActivity : AppCompatActivity() {
                 waveformInfoTextView.visibility = View.GONE
             }
         }
+
+        // カメラモードでは処理結果(imageView)を表示領域いっぱいに拡大(centerCrop)して、
+        // 上下の帯(正方形クロップのfitCenterでできる透明余白から背面のライブプレビューが
+        // 透けて見える現象)を解消する。imageViewが不透明な結果画像で領域全体を覆うため、
+        // 背面のcameraPreviewViewも隠れる。画像モードでは全体を欠けなく見せるためfitCenter。
+        if (isCameraMode) {
+            imageView.scaleType = ImageView.ScaleType.CENTER_CROP
+        } else {
+            imageView.scaleType = ImageView.ScaleType.FIT_CENTER
+        }
     }
 
     private fun switchAlgorithm(newAlgorithm: AlgorithmType) {
