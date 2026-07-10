@@ -49,7 +49,9 @@ class AiliaPoseEstimatorSample {
             if (isInitialized) {
                 releasePoseEstimator()
             }
-            
+
+            Log.i("AILIA_Main", "Pose estimator: initializing with envId=$envId")
+
             ailia = AiliaModel(
                 envId,
                 Ailia.MULTITHREAD_AUTO,
