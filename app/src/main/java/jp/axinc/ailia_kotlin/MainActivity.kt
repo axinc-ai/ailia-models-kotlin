@@ -246,6 +246,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // 初回起動時、最初のモデル初期化より前にデフォルトのenv(GPU等)を確定させる。
+        // これを行わないと selectedEnvId=0 のまま初期化され、後から遅延実行される
+        // algorithmSpinner の onItemSelected が envスピナーの表示だけをデフォルト値に
+        // 更新するため「表示env≠実際に使われるenv」の不一致が起きる。
+        updateRuntimeSpinner(currentAlgorithm)
+        updateEnvSpinner(currentAlgorithm)
+
         switchToImageMode()
     }
 
