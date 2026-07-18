@@ -364,14 +364,24 @@ class AiliaTFLiteObjectDetectionSample {
 
         for (i in selectedIndices) {
             val bbox = boxes[i]
+            // ailia-modelsと同様にカテゴリごとに色を変える
+            val catColor = CocoAndImageNetLabels.categoryColor(categories[i])
+            val boxPaint = Paint(paint).apply { color = catColor }
             canvas.drawRect(
                 bbox.left * originalW,
                 bbox.top * originalH,
                 bbox.right * originalW,
                 bbox.bottom * originalH,
-                paint
+                boxPaint
             )
-            canvas.drawText(CocoAndImageNetLabels.COCO_CATEGORY[categories[i]] + " " + scores[i].toString(), bbox.left * originalW, bbox.top * originalH, text)
+            // ラベルはカテゴリ色の背景に白文字(Python版plot_resultsと同じ)
+            val labelText = CocoAndImageNetLabels.COCO_CATEGORY[categories[i]] + " " + String.format("%.2f", scores[i])
+            val bgPaint = Paint().apply { style = Paint.Style.FILL; color = catColor }
+            val tx = bbox.left * originalW
+            val ty = bbox.top * originalH
+            canvas.drawRect(tx, ty - text.textSize, tx + text.measureText(labelText), ty + text.textSize * 0.2f, bgPaint)
+            val labelPaint = Paint(text).apply { color = android.graphics.Color.WHITE }
+            canvas.drawText(labelText, tx, ty, labelPaint)
 
             detectionResults.add(AiliaTrackerSample.DetectionResult(
                 category = categories[i],

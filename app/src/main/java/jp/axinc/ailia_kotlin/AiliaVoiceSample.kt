@@ -23,11 +23,11 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import kotlin.math.roundToInt
 
-enum class VoiceModelType {
-    GPT_SOVITS_V1,
-    GPT_SOVITS_V2,
-    GPT_SOVITS_V3,
-    GPT_SOVITS_V2_PRO,
+enum class VoiceModelType(val displayName: String) {
+    GPT_SOVITS_V1("GPT-SoVITS V1"),
+    GPT_SOVITS_V2("GPT-SoVITS V2"),
+    GPT_SOVITS_V3("GPT-SoVITS V3"),
+    GPT_SOVITS_V2_PRO("GPT-SoVITS V2-Pro"),
 }
 
 class AiliaVoiceSample {
@@ -46,6 +46,14 @@ class AiliaVoiceSample {
     var modelType: VoiceModelType = VoiceModelType.GPT_SOVITS_V1
     var modelDir: String = ""
     private var downloadListener: DownloadListener? = null
+
+    // 直近の合成結果(波形表示用)
+    var lastAudioData: FloatArray? = null
+        private set
+    var lastAudioChannels: Int = 1
+        private set
+    var lastAudioSampleRate: Int = 0
+        private set
 
     private fun download(link: String, name: String): String {
         val dir: String = modelDir
@@ -318,6 +326,9 @@ class AiliaVoiceSample {
             val inferenceResult: AiliaVoice.AudioData = voice?.synthesizeVoice(g2pText)!!
             val endTime = System.nanoTime()
             Log.d(TAG, "Inference result samples ${inferenceResult.data.size} channels ${inferenceResult.channels} sampleRate ${inferenceResult.samplingRate}")
+            lastAudioData = inferenceResult.data
+            lastAudioChannels = inferenceResult.channels
+            lastAudioSampleRate = inferenceResult.samplingRate
             playAudio(inferenceResult.data, inferenceResult.channels, inferenceResult.samplingRate)
             return (endTime - startTime) / 1000000
         } catch (e: Exception) {

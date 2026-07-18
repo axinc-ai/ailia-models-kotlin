@@ -39,16 +39,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modeRadioGroup: RadioGroup
     private lateinit var algorithmSpinner: Spinner
     private lateinit var envSpinner: Spinner
-    private lateinit var envLabel: TextView
-    private lateinit var runtimeSpinner: Spinner
-    private lateinit var runtimeLabel: TextView
     private lateinit var processingTimeTextView: TextView
     private lateinit var resultScrollView: ScrollView
     private lateinit var classificationResultTextView: TextView
     private lateinit var tokenizerInputEditText: EditText
     private lateinit var tokenizerOutputTextView: TextView
     private lateinit var trackingResultTextView: TextView
-    private lateinit var voiceModelSpinner: Spinner
+    private lateinit var voiceInputEditText: EditText
+    private lateinit var voiceEnvSpinner: Spinner
+    private lateinit var voiceReplayButton: Button
     private lateinit var voiceStatusTextView: TextView
     private lateinit var voiceGenerateButton: Button
     private lateinit var voiceResultTextView: TextView
@@ -56,17 +55,31 @@ class MainActivity : AppCompatActivity() {
     private lateinit var llmInputEditText: EditText
     private lateinit var llmSendButton: Button
     private lateinit var llmOutputLabel: TextView
-    private lateinit var llmOutputTextView: TextView
+    private lateinit var llmChatContainer: LinearLayout
     private lateinit var llmStatusTextView: TextView
     private lateinit var multimodalImageView: ImageView
-    private lateinit var speechModelLabel: TextView
-    private lateinit var speechModelSpinner: Spinner
+    private lateinit var speechLanguageLabel: TextView
+    private lateinit var speechLanguageSpinner: Spinner
     private lateinit var speechModeRadioGroup: RadioGroup
     private lateinit var diarizationCheckBox: CheckBox
+    private lateinit var liveModeCheckBox: CheckBox
+    private lateinit var cameraSpinner: Spinner
     private lateinit var speechRunButton: Button
     private lateinit var micRecordButton: Button
-    private lateinit var waveformImageView: ImageView
+    private lateinit var waveformView: WaveformView
     private lateinit var waveformInfoTextView: TextView
+    private lateinit var voiceWaveformView: WaveformView
+    private lateinit var modelSpinner: Spinner
+    private lateinit var transcriptTextView: TextView
+    private lateinit var rootScrollView: ScrollView
+    private lateinit var visionRunButton: Button
+
+    // 画像系/Tokenizeアルゴリズムは、Runボタンが押されるまで
+    // モデルのダウンロードと実行を行わない
+    private var runRequested = false
+
+    // 議事録風トランスクリプト([mm:ss - mm:ss] text の蓄積)
+    private val speechTranscript = mutableListOf<String>()
 
     private var poseEstimatorSample = AiliaPoseEstimatorSample()
     private var objectDetectionSample = AiliaTFLiteObjectDetectionSample()
@@ -97,10 +110,37 @@ class MainActivity : AppCompatActivity() {
     private var camera: Camera? = null
     private var latestCameraBitmap: Bitmap? = null
 
+    // カメラ選択(リストボックスで切り替え)
+    private data class CameraChoice(val name: String, val selector: CameraSelector)
+    private val cameraChoices = listOf(
+        CameraChoice("Back Camera", CameraSelector.DEFAULT_BACK_CAMERA),
+        CameraChoice("Front Camera", CameraSelector.DEFAULT_FRONT_CAMERA),
+    )
+    private var selectedCameraIndex = 0
+
+    // 音声認識処理用の低優先度Executor。カメラ/マイク読み出しと分離して
+    // transcribe中もUI(波形表示等)がカクつかないようにする。
+    private lateinit var speechExecutor: ExecutorService
+
     private var selectedVoiceModelType: VoiceModelType = VoiceModelType.GPT_SOVITS_V1
     private var selectedSpeechModelType: SpeechModelType = SpeechModelType.WHISPER_TINY
+    private var selectedSpeechLanguage: String = "ja"
+    private var selectedLLMModelType: LLMModelType = LLMModelType.GEMMA_4_E2B
     private var audioRecord: AudioRecord? = null
     private var isRecording = AtomicBoolean(false)
+
+    // マイク録音のREC経過時間表示用
+    private val recTimerHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var recStartMs: Long = 0
+    private val recTimerRunnable = object : Runnable {
+        override fun run() {
+            if (isRecording.get()) {
+                val elapsedSec = (android.os.SystemClock.elapsedRealtime() - recStartMs) / 1000
+                waveformInfoTextView.text = "● REC %02d:%02d".format(elapsedSec / 60, elapsedSec % 60)
+                recTimerHandler.postDelayed(this, 500)
+            }
+        }
+    }
 
     enum class AlgorithmType {
         POSE_ESTIMATION,
@@ -145,6 +185,15 @@ class MainActivity : AppCompatActivity() {
         // (SpinnerのonItemSelectedでinitializeAilia()が呼ばれるため)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
+        // 音声認識はバックグラウンド優先度の専用スレッドで実行し、
+        // 推論中でもUIスレッドがCPUを確保できるようにする
+        speechExecutor = Executors.newSingleThreadExecutor { r ->
+            Thread {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                r.run()
+            }
+        }
+
         val modelDir = (getExternalFilesDir(null) ?: filesDir).absolutePath
         onnxObjectDetectionSample.modelDir = modelDir
         onnxClassificationSample.modelDir = modelDir
@@ -153,6 +202,7 @@ class MainActivity : AppCompatActivity() {
         voiceSample.modelDir = modelDir
 
         initializeViews()
+        adjustContentSizeForScreen()
         setupModeSelection()
         updateUIVisibility()
 
@@ -169,16 +219,15 @@ class MainActivity : AppCompatActivity() {
         modeRadioGroup = findViewById(R.id.modeRadioGroup)
         algorithmSpinner = findViewById(R.id.algorithmSpinner)
         envSpinner = findViewById(R.id.envSpinner)
-        envLabel = findViewById(R.id.envLabel)
-        runtimeSpinner = findViewById(R.id.runtimeSpinner)
-        runtimeLabel = findViewById(R.id.runtimeLabel)
         processingTimeTextView = findViewById(R.id.processingTimeTextView)
         resultScrollView = findViewById(R.id.resultScrollView)
         classificationResultTextView = findViewById(R.id.classificationResultTextView)
         tokenizerInputEditText = findViewById(R.id.tokenizerInputEditText)
         tokenizerOutputTextView = findViewById(R.id.tokenizerOutputTextView)
         trackingResultTextView = findViewById(R.id.trackingResultTextView)
-        voiceModelSpinner = findViewById(R.id.voiceModelSpinner)
+        voiceInputEditText = findViewById(R.id.voiceInputEditText)
+        voiceEnvSpinner = findViewById(R.id.voiceEnvSpinner)
+        voiceReplayButton = findViewById(R.id.voiceReplayButton)
         voiceStatusTextView = findViewById(R.id.voiceStatusTextView)
         voiceGenerateButton = findViewById(R.id.voiceGenerateButton)
         voiceResultTextView = findViewById(R.id.voiceResultTextView)
@@ -186,17 +235,24 @@ class MainActivity : AppCompatActivity() {
         llmInputEditText = findViewById(R.id.llmInputEditText)
         llmSendButton = findViewById(R.id.llmSendButton)
         llmOutputLabel = findViewById(R.id.llmOutputLabel)
-        llmOutputTextView = findViewById(R.id.llmOutputTextView)
+        llmChatContainer = findViewById(R.id.llmChatContainer)
         llmStatusTextView = findViewById(R.id.llmStatusTextView)
         multimodalImageView = findViewById(R.id.multimodalImageView)
-        speechModelLabel = findViewById(R.id.speechModelLabel)
-        speechModelSpinner = findViewById(R.id.speechModelSpinner)
+        speechLanguageLabel = findViewById(R.id.speechLanguageLabel)
+        speechLanguageSpinner = findViewById(R.id.speechLanguageSpinner)
         speechModeRadioGroup = findViewById(R.id.speechModeRadioGroup)
         diarizationCheckBox = findViewById(R.id.diarizationCheckBox)
+        liveModeCheckBox = findViewById(R.id.liveModeCheckBox)
+        cameraSpinner = findViewById(R.id.cameraSpinner)
+        transcriptTextView = findViewById(R.id.transcriptTextView)
         speechRunButton = findViewById(R.id.speechRunButton)
         micRecordButton = findViewById(R.id.micRecordButton)
-        waveformImageView = findViewById(R.id.waveformImageView)
+        waveformView = findViewById(R.id.waveformView)
         waveformInfoTextView = findViewById(R.id.waveformInfoTextView)
+        voiceWaveformView = findViewById(R.id.voiceWaveformView)
+        modelSpinner = findViewById(R.id.modelSpinner)
+        rootScrollView = findViewById(R.id.rootScrollView)
+        visionRunButton = findViewById(R.id.visionRunButton)
     }
 
     private fun setupModeSelection() {
@@ -212,7 +268,8 @@ class MainActivity : AppCompatActivity() {
             "MultimodalLLM",
         )
 
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, algorithms)
+        // 全体メニュー風の見た目にするため専用のitemレイアウト(白太字・中央寄せ)を使う
+        val adapter = ArrayAdapter(this, R.layout.spinner_item_menu, algorithms)
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         algorithmSpinner.adapter = adapter
 
@@ -224,8 +281,8 @@ class MainActivity : AppCompatActivity() {
                 id: Long
             ) {
                 val newAlgorithm = AlgorithmType.values()[position]
-                updateRuntimeSpinner(newAlgorithm)
                 updateEnvSpinner(newAlgorithm)
+                updateModelSpinner(newAlgorithm)
                 if (newAlgorithm != currentAlgorithm) {
                     switchAlgorithm(newAlgorithm)
                 }
@@ -250,13 +307,94 @@ class MainActivity : AppCompatActivity() {
         // これを行わないと selectedEnvId=0 のまま初期化され、後から遅延実行される
         // algorithmSpinner の onItemSelected が envスピナーの表示だけをデフォルト値に
         // 更新するため「表示env≠実際に使われるenv」の不一致が起きる。
-        updateRuntimeSpinner(currentAlgorithm)
         updateEnvSpinner(currentAlgorithm)
+        updateModelSpinner()
+        setupCameraSpinner()
+        setupVisionRunButton()
 
         switchToImageMode()
     }
 
-    private fun setupOnnxEnvSpinner(useBlas: Boolean) {
+    /**
+     * 画像/カメラの表示領域を画面サイズに合わせて調整する。
+     * 横画面でも高さが画面内に収まるよう、正方形の一辺を
+     * 「画面幅(マージン込み)」と「画面高さの60%」の小さい方にする。
+     * 画面回転時はActivityが再生成されるためonCreateで再計算される。
+     */
+    private fun adjustContentSizeForScreen() {
+        val dm = resources.displayMetrics
+        val horizontalMargin = (32 * dm.density).toInt()
+        val side = minOf(dm.widthPixels - horizontalMargin, (dm.heightPixels * 0.6f).toInt())
+        for (view in listOf<View>(imageView, cameraPreviewView)) {
+            val lp = view.layoutParams
+            lp.width = side
+            lp.height = side
+            view.layoutParams = lp
+        }
+    }
+
+    /** Runボタンが必要な(押すまで実行しない)アルゴリズムかどうか */
+    private fun needsVisionRunButton(algorithm: AlgorithmType = currentAlgorithm): Boolean {
+        return when (algorithm) {
+            AlgorithmType.POSE_ESTIMATION,
+            AlgorithmType.OBJECT_DETECTION,
+            AlgorithmType.TRACKING,
+            AlgorithmType.CLASSIFICATION,
+            AlgorithmType.TOKENIZE -> true
+            else -> false
+        }
+    }
+
+    /** Run状態をリセットしてボタン表記をRunに戻す */
+    private fun resetRunState() {
+        runRequested = false
+        visionRunButton.text = "Run"
+    }
+
+    private fun setupVisionRunButton() {
+        visionRunButton.setOnClickListener {
+            if (isDownloadingModel.get()) {
+                return@setOnClickListener
+            }
+            val isCameraMode = modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton &&
+                currentAlgorithm != AlgorithmType.TOKENIZE
+            if (isCameraMode) {
+                if (runRequested) {
+                    // Stop: フレーム処理を停止する(プレビューは継続)
+                    resetRunState()
+                    processingTimeTextView.text = "Stopped. Press Run to restart"
+                } else {
+                    runRequested = true
+                    visionRunButton.text = "Stop"
+                    // CameraFrameAnalyzerが次フレームから処理を開始する
+                }
+            } else {
+                runRequested = true
+                processImageMode()
+            }
+        }
+    }
+
+    private fun setupCameraSpinner() {
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, cameraChoices.map { it.name }.toTypedArray())
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        cameraSpinner.adapter = adapter
+        cameraSpinner.setSelection(selectedCameraIndex)
+        cameraSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (position != selectedCameraIndex) {
+                    selectedCameraIndex = position
+                    // カメラモード中なら選択したカメラで再バインドする
+                    if (modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton) {
+                        startCamera()
+                    }
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+    }
+
+    private fun setupOnnxEnvSpinner(useBlas: Boolean, target: Spinner = envSpinner) {
         try {
             if (ailiaEnvironments == null) {
                 Ailia.SetTemporaryCachePath(cacheDir.absolutePath)
@@ -265,7 +403,7 @@ class MainActivity : AppCompatActivity() {
             val envNames = ailiaEnvironments!!.map { "${it.name} (id:${it.id})" }.toTypedArray()
             val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, envNames)
             adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            envSpinner.adapter = adapter
+            target.adapter = adapter
 
             var defaultIndex = 0
             if (useBlas) {
@@ -285,16 +423,17 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-            envSpinner.setSelection(defaultIndex)
+            target.setSelection(defaultIndex)
             selectedEnvId = ailiaEnvironments!![defaultIndex].id
 
-            envSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            target.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                     val newEnvId = ailiaEnvironments!![position].id
                     if (newEnvId != selectedEnvId) {
                         selectedEnvId = newEnvId
                         isInitialized = false
                         isDownloadingModel.set(false)
+                        resetRunState()
                         val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
                         if (isImageMode) {
                             releaseCurrentAlgorithm()
@@ -310,12 +449,10 @@ class MainActivity : AppCompatActivity() {
                 override fun onNothingSelected(parent: AdapterView<*>?) {}
             }
 
-            envLabel.visibility = View.VISIBLE
-            envSpinner.visibility = View.VISIBLE
+            target.visibility = View.VISIBLE
         } catch (e: Exception) {
             Log.e("AILIA_Main", "Failed to get ailia environments: ${e.message}")
-            envLabel.visibility = View.GONE
-            envSpinner.visibility = View.GONE
+            target.visibility = View.GONE
         }
     }
 
@@ -325,8 +462,14 @@ class MainActivity : AppCompatActivity() {
                 setupOnnxEnvSpinner(useBlas = false)
             }
 
-            AlgorithmType.SPEECH_TO_TEXT, AlgorithmType.TEXT_TO_SPEECH, AlgorithmType.TOKENIZE -> {
+            AlgorithmType.SPEECH_TO_TEXT, AlgorithmType.TOKENIZE -> {
                 setupOnnxEnvSpinner(useBlas = true)
+            }
+
+            AlgorithmType.TEXT_TO_SPEECH -> {
+                // TTSのバックエンド選択はGenerateボタンの右側に表示する
+                envSpinner.visibility = View.GONE
+                setupOnnxEnvSpinner(useBlas = true, target = voiceEnvSpinner)
             }
 
             AlgorithmType.OBJECT_DETECTION, AlgorithmType.CLASSIFICATION, AlgorithmType.TRACKING -> {
@@ -351,6 +494,7 @@ class MainActivity : AppCompatActivity() {
                                 selectedEnvId = newEnvId
                                 isInitialized = false
                                 isDownloadingModel.set(false)
+                                resetRunState()
                                 val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
                                 if (isImageMode) {
                                     releaseCurrentAlgorithm()
@@ -365,64 +509,132 @@ class MainActivity : AppCompatActivity() {
                         override fun onNothingSelected(parent: AdapterView<*>?) {}
                     }
 
-                    envLabel.visibility = View.VISIBLE
                     envSpinner.visibility = View.VISIBLE
                 }
             }
 
             else -> {
-                envLabel.visibility = View.GONE
                 envSpinner.visibility = View.GONE
             }
         }
     }
 
-    private fun updateRuntimeSpinner(algorithm: AlgorithmType) {
+    /**
+     * モデル選択スピナーを現在のアルゴリズムに合わせて更新する。
+     * S2T/TTS/LLMのモデル選択や、YOLOX等のTFLite/ONNX(ランタイム)選択もここに統合。
+     */
+    private fun updateModelSpinner(algorithm: AlgorithmType = currentAlgorithm) {
+        var selectedIndex = 0
+        val items: Array<String> = when (algorithm) {
+            AlgorithmType.POSE_ESTIMATION -> {
+                selectedRuntime = "ONNX"
+                arrayOf("LightweightHumanPose")
+            }
+            AlgorithmType.OBJECT_DETECTION -> {
+                selectedIndex = if (selectedRuntime == "ONNX") 1 else 0
+                arrayOf("YOLOX-S (TFLite)", "YOLOX-S (ONNX)")
+            }
+            AlgorithmType.TRACKING -> {
+                selectedIndex = if (selectedRuntime == "ONNX") 1 else 0
+                arrayOf("YOLOX-S + ByteTrack (TFLite)", "YOLOX-S + ByteTrack (ONNX)")
+            }
+            AlgorithmType.CLASSIFICATION -> {
+                selectedIndex = if (selectedRuntime == "ONNX") 1 else 0
+                arrayOf("MobileNetV2 (TFLite)", "MobileNetV2 (ONNX)")
+            }
+            AlgorithmType.TOKENIZE -> arrayOf("Multilingual MiniLMv2 (L12)")
+            AlgorithmType.SPEECH_TO_TEXT -> {
+                selectedIndex = SpeechModelType.values().indexOf(selectedSpeechModelType)
+                SpeechModelType.values().map { it.displayName }.toTypedArray()
+            }
+            AlgorithmType.TEXT_TO_SPEECH -> {
+                selectedIndex = VoiceModelType.values().indexOf(selectedVoiceModelType)
+                VoiceModelType.values().map { it.displayName }.toTypedArray()
+            }
+            AlgorithmType.LLM -> {
+                selectedIndex = LLMModelType.values().indexOf(selectedLLMModelType)
+                LLMModelType.values().map { "${it.displayName} (Q4_K_M)" }.toTypedArray()
+            }
+            AlgorithmType.MULTIMODAL_LLM -> arrayOf("Gemma-3 4B IT (Q4_K_M)")
+        }
+
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        modelSpinner.onItemSelectedListener = null
+        modelSpinner.adapter = adapter
+        if (selectedIndex in items.indices) {
+            modelSpinner.setSelection(selectedIndex, false)
+        }
+        modelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                onModelSelected(algorithm, position)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+    }
+
+    /** モデル選択スピナーの選択変更を各アルゴリズムに反映する */
+    private fun onModelSelected(algorithm: AlgorithmType, position: Int) {
         when (algorithm) {
             AlgorithmType.OBJECT_DETECTION, AlgorithmType.CLASSIFICATION, AlgorithmType.TRACKING -> {
-                val runtimes = arrayOf("TFLite", "ONNX")
-                val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, runtimes)
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                runtimeSpinner.adapter = adapter
-
-                val defaultIndex = if (selectedRuntime == "ONNX") 1 else 0
-                runtimeSpinner.setSelection(defaultIndex)
-
-                runtimeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                        val newRuntime = runtimes[position]
-                        if (newRuntime != selectedRuntime) {
-                            selectedRuntime = newRuntime
-                            updateEnvSpinner(algorithm)
-                            isInitialized = false
-                            isDownloadingModel.set(false)
-                            val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
-                            if (isImageMode) {
-                                releaseCurrentAlgorithm()
-                                processImageMode()
-                            } else {
-                                cameraExecutor.execute {
-                                    releaseCurrentAlgorithm()
-                                }
-                            }
+                val newRuntime = if (position == 1) "ONNX" else "TFLite"
+                if (newRuntime != selectedRuntime) {
+                    selectedRuntime = newRuntime
+                    updateEnvSpinner(algorithm)
+                    isInitialized = false
+                    isDownloadingModel.set(false)
+                    resetRunState()
+                    val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
+                    if (isImageMode) {
+                        releaseCurrentAlgorithm()
+                        processImageMode()
+                    } else {
+                        cameraExecutor.execute {
+                            releaseCurrentAlgorithm()
                         }
                     }
-                    override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }
-
-                runtimeLabel.visibility = View.VISIBLE
-                runtimeSpinner.visibility = View.VISIBLE
             }
-            AlgorithmType.POSE_ESTIMATION -> {
-                // PoseEstimation は ONNX 固定
-                selectedRuntime = "ONNX"
-                runtimeLabel.visibility = View.GONE
-                runtimeSpinner.visibility = View.GONE
+            AlgorithmType.SPEECH_TO_TEXT -> {
+                val newType = SpeechModelType.values()[position]
+                if (newType != selectedSpeechModelType) {
+                    selectedSpeechModelType = newType
+                    stopMicRecording()
+                    // モデルダウンロードはRun/Record押下時まで遅延する
+                    speechSample.releaseSpeech()
+                    isInitialized = false
+                    isDownloadingModel.set(false)
+                    clearTranscript()
+                    classificationResultTextView.text = "Speech Result: --"
+                }
             }
-            else -> {
-                runtimeLabel.visibility = View.GONE
-                runtimeSpinner.visibility = View.GONE
+            AlgorithmType.TEXT_TO_SPEECH -> {
+                val newType = VoiceModelType.values()[position]
+                if (newType != selectedVoiceModelType) {
+                    selectedVoiceModelType = newType
+                    // モデル切り替え時は解放のみ(ダウンロードはGenerate押下時)
+                    voiceSample.releaseVoice()
+                    isInitialized = false
+                    voiceWaveformView.clear()
+                    voiceReplayButton.visibility = View.GONE
+                    voiceResultTextView.text = ""
+                    voiceInputEditText.setText(defaultVoiceText(newType))
+                    voiceStatusTextView.text = "Status: Press Generate to download model and synthesize"
+                }
             }
+            AlgorithmType.LLM -> {
+                val newType = LLMModelType.values()[position]
+                if (newType != selectedLLMModelType) {
+                    selectedLLMModelType = newType
+                    // モデル切り替え時は解放のみ(ダウンロードはSend押下時)
+                    llmSample.release()
+                    isInitialized = false
+                    llmChatContainer.removeAllViews()
+                    llmSendButton.isEnabled = true
+                    llmStatusTextView.text = "Status: Press Send to download model and run"
+                }
+            }
+            else -> {}
         }
     }
 
@@ -529,15 +741,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             AlgorithmType.SPEECH_TO_TEXT -> {
-                val audio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.demo))
-                val startTime = System.nanoTime()
-                val text: String =
-                    speechSample.process(audio.audioData, audio.channels, audio.sampleRate)
-                val endTime = System.nanoTime()
-                runOnUiThread {
-                    classificationResultTextView.text = "Speech Result:\n$text"
-                }
-                (endTime - startTime) / 1000000
+                // Speech is handled asynchronously via the Run/Record buttons
+                0
             }
 
             AlgorithmType.TEXT_TO_SPEECH -> {
@@ -566,6 +771,7 @@ class MainActivity : AppCompatActivity() {
                 tokenizerInputEditText.visibility = View.VISIBLE
                 tokenizerOutputTextView.visibility = View.VISIBLE
                 trackingResultTextView.visibility = View.GONE
+                transcriptTextView.visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.VISIBLE
                 findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.VISIBLE
                 multimodalImageView.visibility = View.GONE
@@ -573,21 +779,24 @@ class MainActivity : AppCompatActivity() {
                 llmInputEditText.visibility = View.GONE
                 llmSendButton.visibility = View.GONE
                 llmOutputLabel.visibility = View.GONE
-                llmOutputTextView.visibility = View.GONE
+                llmChatContainer.visibility = View.GONE
                 llmStatusTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.voiceModelLabel).visibility = View.GONE
-                voiceModelSpinner.visibility = View.GONE
+                voiceInputEditText.visibility = View.GONE
                 voiceStatusTextView.visibility = View.GONE
                 voiceGenerateButton.visibility = View.GONE
+                voiceEnvSpinner.visibility = View.GONE
                 voiceResultTextView.visibility = View.GONE
-                speechModelLabel.visibility = View.GONE
-                speechModelSpinner.visibility = View.GONE
+                speechLanguageLabel.visibility = View.GONE
+                speechLanguageSpinner.visibility = View.GONE
                 speechModeRadioGroup.visibility = View.GONE
                 diarizationCheckBox.visibility = View.GONE
+                liveModeCheckBox.visibility = View.GONE
                 speechRunButton.visibility = View.GONE
                 micRecordButton.visibility = View.GONE
-                waveformImageView.visibility = View.GONE
+                waveformView.visibility = View.GONE
                 waveformInfoTextView.visibility = View.GONE
+                voiceWaveformView.visibility = View.GONE
+                voiceReplayButton.visibility = View.GONE
             }
 
             AlgorithmType.CLASSIFICATION -> {
@@ -604,6 +813,7 @@ class MainActivity : AppCompatActivity() {
                 tokenizerInputEditText.visibility = View.GONE
                 tokenizerOutputTextView.visibility = View.GONE
                 trackingResultTextView.visibility = View.GONE
+                transcriptTextView.visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
                 multimodalImageView.visibility = View.GONE
@@ -611,21 +821,24 @@ class MainActivity : AppCompatActivity() {
                 llmInputEditText.visibility = View.GONE
                 llmSendButton.visibility = View.GONE
                 llmOutputLabel.visibility = View.GONE
-                llmOutputTextView.visibility = View.GONE
+                llmChatContainer.visibility = View.GONE
                 llmStatusTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.voiceModelLabel).visibility = View.GONE
-                voiceModelSpinner.visibility = View.GONE
+                voiceInputEditText.visibility = View.GONE
                 voiceStatusTextView.visibility = View.GONE
                 voiceGenerateButton.visibility = View.GONE
+                voiceEnvSpinner.visibility = View.GONE
                 voiceResultTextView.visibility = View.GONE
-                speechModelLabel.visibility = View.GONE
-                speechModelSpinner.visibility = View.GONE
+                speechLanguageLabel.visibility = View.GONE
+                speechLanguageSpinner.visibility = View.GONE
                 speechModeRadioGroup.visibility = View.GONE
                 diarizationCheckBox.visibility = View.GONE
+                liveModeCheckBox.visibility = View.GONE
                 speechRunButton.visibility = View.GONE
                 micRecordButton.visibility = View.GONE
-                waveformImageView.visibility = View.GONE
+                waveformView.visibility = View.GONE
                 waveformInfoTextView.visibility = View.GONE
+                voiceWaveformView.visibility = View.GONE
+                voiceReplayButton.visibility = View.GONE
             }
 
             AlgorithmType.TRACKING -> {
@@ -642,6 +855,7 @@ class MainActivity : AppCompatActivity() {
                 tokenizerInputEditText.visibility = View.GONE
                 tokenizerOutputTextView.visibility = View.GONE
                 trackingResultTextView.visibility = View.GONE
+                transcriptTextView.visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
                 multimodalImageView.visibility = View.GONE
@@ -649,21 +863,24 @@ class MainActivity : AppCompatActivity() {
                 llmInputEditText.visibility = View.GONE
                 llmSendButton.visibility = View.GONE
                 llmOutputLabel.visibility = View.GONE
-                llmOutputTextView.visibility = View.GONE
+                llmChatContainer.visibility = View.GONE
                 llmStatusTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.voiceModelLabel).visibility = View.GONE
-                voiceModelSpinner.visibility = View.GONE
+                voiceInputEditText.visibility = View.GONE
                 voiceStatusTextView.visibility = View.GONE
                 voiceGenerateButton.visibility = View.GONE
+                voiceEnvSpinner.visibility = View.GONE
                 voiceResultTextView.visibility = View.GONE
-                speechModelLabel.visibility = View.GONE
-                speechModelSpinner.visibility = View.GONE
+                speechLanguageLabel.visibility = View.GONE
+                speechLanguageSpinner.visibility = View.GONE
                 speechModeRadioGroup.visibility = View.GONE
                 diarizationCheckBox.visibility = View.GONE
+                liveModeCheckBox.visibility = View.GONE
                 speechRunButton.visibility = View.GONE
                 micRecordButton.visibility = View.GONE
-                waveformImageView.visibility = View.GONE
+                waveformView.visibility = View.GONE
                 waveformInfoTextView.visibility = View.GONE
+                voiceWaveformView.visibility = View.GONE
+                voiceReplayButton.visibility = View.GONE
             }
 
             AlgorithmType.SPEECH_TO_TEXT -> {
@@ -677,6 +894,7 @@ class MainActivity : AppCompatActivity() {
                 tokenizerInputEditText.visibility = View.GONE
                 tokenizerOutputTextView.visibility = View.GONE
                 trackingResultTextView.visibility = View.GONE
+                transcriptTextView.visibility = View.VISIBLE
                 findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
                 multimodalImageView.visibility = View.GONE
@@ -684,22 +902,26 @@ class MainActivity : AppCompatActivity() {
                 llmInputEditText.visibility = View.GONE
                 llmSendButton.visibility = View.GONE
                 llmOutputLabel.visibility = View.GONE
-                llmOutputTextView.visibility = View.GONE
+                llmChatContainer.visibility = View.GONE
                 llmStatusTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.voiceModelLabel).visibility = View.GONE
-                voiceModelSpinner.visibility = View.GONE
+                voiceInputEditText.visibility = View.GONE
                 voiceStatusTextView.visibility = View.GONE
                 voiceGenerateButton.visibility = View.GONE
+                voiceEnvSpinner.visibility = View.GONE
                 voiceResultTextView.visibility = View.GONE
                 // Speech-specific UI
-                speechModelLabel.visibility = View.VISIBLE
-                speechModelSpinner.visibility = View.VISIBLE
+                // 言語選択はMicモード時のみ(Wavはauto固定)
+                speechLanguageLabel.visibility = if (isMicMode) View.VISIBLE else View.GONE
+                speechLanguageSpinner.visibility = if (isMicMode) View.VISIBLE else View.GONE
                 speechModeRadioGroup.visibility = View.VISIBLE
                 diarizationCheckBox.visibility = View.VISIBLE
+                liveModeCheckBox.visibility = if (isMicMode) View.VISIBLE else View.GONE
                 speechRunButton.visibility = if (isMicMode) View.GONE else View.VISIBLE
                 micRecordButton.visibility = if (isMicMode) View.VISIBLE else View.GONE
-                waveformImageView.visibility = if (isMicMode) View.VISIBLE else View.GONE
+                waveformView.visibility = if (isMicMode) View.VISIBLE else View.GONE
                 waveformInfoTextView.visibility = if (isMicMode) View.VISIBLE else View.GONE
+                voiceWaveformView.visibility = View.GONE
+                voiceReplayButton.visibility = View.GONE
             }
             AlgorithmType.LLM -> {
                 modeRadioGroup.visibility = View.GONE
@@ -710,6 +932,7 @@ class MainActivity : AppCompatActivity() {
                 tokenizerInputEditText.visibility = View.GONE
                 tokenizerOutputTextView.visibility = View.GONE
                 trackingResultTextView.visibility = View.GONE
+                transcriptTextView.visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
                 multimodalImageView.visibility = View.GONE
@@ -717,26 +940,29 @@ class MainActivity : AppCompatActivity() {
                 llmInputEditText.visibility = View.VISIBLE
                 llmSendButton.visibility = View.VISIBLE
                 llmOutputLabel.visibility = View.VISIBLE
-                llmOutputTextView.visibility = View.VISIBLE
+                llmChatContainer.visibility = View.VISIBLE
                 llmStatusTextView.visibility = View.VISIBLE
-                findViewById<TextView>(R.id.voiceModelLabel).visibility = View.GONE
-                voiceModelSpinner.visibility = View.GONE
+                voiceInputEditText.visibility = View.GONE
                 voiceStatusTextView.visibility = View.GONE
                 voiceGenerateButton.visibility = View.GONE
+                voiceEnvSpinner.visibility = View.GONE
                 voiceResultTextView.visibility = View.GONE
-                speechModelLabel.visibility = View.GONE
-                speechModelSpinner.visibility = View.GONE
+                speechLanguageLabel.visibility = View.GONE
+                speechLanguageSpinner.visibility = View.GONE
                 speechModeRadioGroup.visibility = View.GONE
                 diarizationCheckBox.visibility = View.GONE
+                liveModeCheckBox.visibility = View.GONE
                 speechRunButton.visibility = View.GONE
                 micRecordButton.visibility = View.GONE
-                waveformImageView.visibility = View.GONE
+                waveformView.visibility = View.GONE
                 waveformInfoTextView.visibility = View.GONE
-                // モード切り替え時にリセット
+                voiceWaveformView.visibility = View.GONE
+                voiceReplayButton.visibility = View.GONE
+                // モード切り替え時にリセット(ダウンロードはSend押下時)
                 llmInputEditText.setText("Hello!")
-                llmOutputTextView.text = ""
-                llmStatusTextView.text = "Status: Initializing..."
-                llmSendButton.isEnabled = false
+                llmChatContainer.removeAllViews()
+                llmStatusTextView.text = "Status: Press Send to download model and run"
+                llmSendButton.isEnabled = true
             }
             AlgorithmType.MULTIMODAL_LLM -> {
                 modeRadioGroup.visibility = View.VISIBLE
@@ -751,6 +977,7 @@ class MainActivity : AppCompatActivity() {
                 tokenizerInputEditText.visibility = View.GONE
                 tokenizerOutputTextView.visibility = View.GONE
                 trackingResultTextView.visibility = View.GONE
+                transcriptTextView.visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
                 multimodalImageView.visibility = View.VISIBLE
@@ -758,26 +985,29 @@ class MainActivity : AppCompatActivity() {
                 llmInputEditText.visibility = View.VISIBLE
                 llmSendButton.visibility = View.VISIBLE
                 llmOutputLabel.visibility = View.VISIBLE
-                llmOutputTextView.visibility = View.VISIBLE
+                llmChatContainer.visibility = View.VISIBLE
                 llmStatusTextView.visibility = View.VISIBLE
-                findViewById<TextView>(R.id.voiceModelLabel).visibility = View.GONE
-                voiceModelSpinner.visibility = View.GONE
+                voiceInputEditText.visibility = View.GONE
                 voiceStatusTextView.visibility = View.GONE
                 voiceGenerateButton.visibility = View.GONE
+                voiceEnvSpinner.visibility = View.GONE
                 voiceResultTextView.visibility = View.GONE
-                speechModelLabel.visibility = View.GONE
-                speechModelSpinner.visibility = View.GONE
+                speechLanguageLabel.visibility = View.GONE
+                speechLanguageSpinner.visibility = View.GONE
                 speechModeRadioGroup.visibility = View.GONE
                 diarizationCheckBox.visibility = View.GONE
+                liveModeCheckBox.visibility = View.GONE
                 speechRunButton.visibility = View.GONE
                 micRecordButton.visibility = View.GONE
-                waveformImageView.visibility = View.GONE
+                waveformView.visibility = View.GONE
                 waveformInfoTextView.visibility = View.GONE
-                // モード切り替え時にリセット
+                voiceWaveformView.visibility = View.GONE
+                voiceReplayButton.visibility = View.GONE
+                // モード切り替え時にリセット(ダウンロードはSend押下時)
                 llmInputEditText.setText("What is in this image?")
-                llmOutputTextView.text = ""
-                llmStatusTextView.text = "Status: Initializing..."
-                llmSendButton.isEnabled = false
+                llmChatContainer.removeAllViews()
+                llmStatusTextView.text = "Status: Press Send to download model and run"
+                llmSendButton.isEnabled = true
             }
 
             AlgorithmType.TEXT_TO_SPEECH -> {
@@ -789,6 +1019,7 @@ class MainActivity : AppCompatActivity() {
                 tokenizerInputEditText.visibility = View.GONE
                 tokenizerOutputTextView.visibility = View.GONE
                 trackingResultTextView.visibility = View.GONE
+                transcriptTextView.visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
                 multimodalImageView.visibility = View.GONE
@@ -796,24 +1027,28 @@ class MainActivity : AppCompatActivity() {
                 llmInputEditText.visibility = View.GONE
                 llmSendButton.visibility = View.GONE
                 llmOutputLabel.visibility = View.GONE
-                llmOutputTextView.visibility = View.GONE
+                llmChatContainer.visibility = View.GONE
                 llmStatusTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.voiceModelLabel).visibility = View.VISIBLE
-                voiceModelSpinner.visibility = View.VISIBLE
+                voiceInputEditText.visibility = View.VISIBLE
                 voiceStatusTextView.visibility = View.VISIBLE
                 voiceGenerateButton.visibility = View.VISIBLE
+                voiceEnvSpinner.visibility = View.VISIBLE
                 voiceResultTextView.visibility = View.VISIBLE
-                speechModelLabel.visibility = View.GONE
-                speechModelSpinner.visibility = View.GONE
+                speechLanguageLabel.visibility = View.GONE
+                speechLanguageSpinner.visibility = View.GONE
                 speechModeRadioGroup.visibility = View.GONE
                 diarizationCheckBox.visibility = View.GONE
+                liveModeCheckBox.visibility = View.GONE
                 speechRunButton.visibility = View.GONE
                 micRecordButton.visibility = View.GONE
-                waveformImageView.visibility = View.GONE
+                waveformView.visibility = View.GONE
                 waveformInfoTextView.visibility = View.GONE
-                voiceGenerateButton.isEnabled = false
+                voiceWaveformView.visibility = View.VISIBLE
+                voiceWaveformView.clear()
+                voiceReplayButton.visibility = View.GONE
+                voiceGenerateButton.isEnabled = true
                 voiceResultTextView.text = ""
-                voiceStatusTextView.text = "Status: Initializing..."
+                voiceStatusTextView.text = "Status: Press Generate to download model and synthesize"
             }
 
             else -> {
@@ -830,6 +1065,7 @@ class MainActivity : AppCompatActivity() {
                 tokenizerInputEditText.visibility = View.GONE
                 tokenizerOutputTextView.visibility = View.GONE
                 trackingResultTextView.visibility = View.GONE
+                transcriptTextView.visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
                 findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
                 multimodalImageView.visibility = View.GONE
@@ -837,21 +1073,24 @@ class MainActivity : AppCompatActivity() {
                 llmInputEditText.visibility = View.GONE
                 llmSendButton.visibility = View.GONE
                 llmOutputLabel.visibility = View.GONE
-                llmOutputTextView.visibility = View.GONE
+                llmChatContainer.visibility = View.GONE
                 llmStatusTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.voiceModelLabel).visibility = View.GONE
-                voiceModelSpinner.visibility = View.GONE
+                voiceInputEditText.visibility = View.GONE
                 voiceStatusTextView.visibility = View.GONE
                 voiceGenerateButton.visibility = View.GONE
+                voiceEnvSpinner.visibility = View.GONE
                 voiceResultTextView.visibility = View.GONE
-                speechModelLabel.visibility = View.GONE
-                speechModelSpinner.visibility = View.GONE
+                speechLanguageLabel.visibility = View.GONE
+                speechLanguageSpinner.visibility = View.GONE
                 speechModeRadioGroup.visibility = View.GONE
                 diarizationCheckBox.visibility = View.GONE
+                liveModeCheckBox.visibility = View.GONE
                 speechRunButton.visibility = View.GONE
                 micRecordButton.visibility = View.GONE
-                waveformImageView.visibility = View.GONE
+                waveformView.visibility = View.GONE
                 waveformInfoTextView.visibility = View.GONE
+                voiceWaveformView.visibility = View.GONE
+                voiceReplayButton.visibility = View.GONE
             }
         }
 
@@ -864,6 +1103,13 @@ class MainActivity : AppCompatActivity() {
         } else {
             imageView.scaleType = ImageView.ScaleType.FIT_CENTER
         }
+
+        // カメラ選択スピナーはカメラモード時のみ表示
+        cameraSpinner.visibility =
+            if (modeRadioGroup.visibility == View.VISIBLE && isCameraMode) View.VISIBLE else View.GONE
+
+        // 画像系/TokenizeにはRunボタンを表示(押して初めてダウンロード+実行)
+        visionRunButton.visibility = if (needsVisionRunButton()) View.VISIBLE else View.GONE
     }
 
     private fun switchAlgorithm(newAlgorithm: AlgorithmType) {
@@ -884,9 +1130,40 @@ class MainActivity : AppCompatActivity() {
         currentAlgorithm = newAlgorithm
         isInitialized = false
         isDownloadingModel.set(false)
-        // アルゴリズム切り替え時にProcessing Timeをリセット
+        resetRunState()
+        // アルゴリズム切り替え時にProcessing Timeと波形表示をリセット
         processingTimeTextView.text = "Processing Time: -- ms"
+        waveformView.clear()
+        voiceWaveformView.clear()
+        waveformInfoTextView.text = ""
+        clearTranscript()
+        updateModelSpinner()
         updateUIVisibility()
+
+        // STT/TTSはImage/Cameraモードの選択状態に関わらずUIセットアップが必要
+        // (processImageModeはImageモード時しか呼ばれないため、ここで登録する)
+        when (newAlgorithm) {
+            AlgorithmType.SPEECH_TO_TEXT -> {
+                setupSpeechLanguageSpinner()
+                setupSpeechModeRadioGroup()
+                setupDiarizationCheckBox()
+                setupLiveModeCheckBox()
+                setupSpeechRunButton()
+                setupMicRecordButton()
+            }
+            AlgorithmType.TEXT_TO_SPEECH -> {
+                setupVoiceGenerateButton()
+                setupVoiceReplayButton()
+                voiceInputEditText.setText(defaultVoiceText(selectedVoiceModelType))
+            }
+            AlgorithmType.LLM -> {
+                setupLLMSendButton()
+            }
+            AlgorithmType.MULTIMODAL_LLM -> {
+                setupMultimodalLLMSendButton()
+            }
+            else -> {}
+        }
 
         if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
             processImageMode()
@@ -933,6 +1210,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executeModeSwitch(modeId: Int) {
+        // モード切り替え時はRun押下からやり直す
+        resetRunState()
         when (modeId) {
             R.id.imageRadioButton -> {
                 updateUIVisibility()
@@ -1210,177 +1489,18 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 AlgorithmType.SPEECH_TO_TEXT -> {
-                    if (isDownloadingModel.get()) return
-                    isDownloadingModel.set(true)
-                    val isMicMode = speechModeRadioGroup.checkedRadioButtonId == R.id.micRadioButton
-                    runOnUiThread {
-                        processingTimeTextView.text = "Downloading speech model (${selectedSpeechModelType.displayName})..."
-                    }
-                    Log.i("AILIA_Main", "Speech: submitting download task to cameraExecutor, model=${selectedSpeechModelType.displayName}, micMode=$isMicMode")
-                    cameraExecutor.execute {
-                        Log.i("AILIA_Main", "Speech: cameraExecutor task started")
-                        try {
-                            val downloaded = speechSample.downloadModel(selectedSpeechModelType, object : AiliaSpeechSample.DownloadListener {
-                                override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                    val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                    runOnUiThread {
-                                        processingTimeTextView.text = "Downloading $fileName... $percent%"
-                                    }
-                                }
-                                override fun onComplete() {}
-                                override fun onError(error: String) {
-                                    runOnUiThread {
-                                        processingTimeTextView.text = "Download error: $error"
-                                    }
-                                }
-                            })
-                            Log.i("AILIA_Main", "Speech: download result=$downloaded")
-                            if (downloaded) {
-                                Log.i("AILIA_Main", "Speech: initializing with envId=$selectedEnvId, liveMode=$isMicMode")
-                                val success = speechSample.initializeSpeech(selectedEnvId, liveMode = isMicMode)
-                                Log.i("AILIA_Main", "Speech: initialization result=$success")
-                                isInitialized = success
-                                isDownloadingModel.set(false)
-                                runOnUiThread {
-                                    if (success) {
-                                        processingTimeTextView.text = "${selectedSpeechModelType.displayName} ready"
-                                        if (!isMicMode) {
-                                            processImageMode()
-                                        }
-                                    } else {
-                                        processingTimeTextView.text = "Failed to initialize speech model"
-                                    }
-                                }
-                            } else {
-                                isDownloadingModel.set(false)
-                            }
-                        } catch (e: Exception) {
-                            Log.e("AILIA_Main", "Speech: exception in cameraExecutor", e)
-                            isDownloadingModel.set(false)
-                            runOnUiThread {
-                                processingTimeTextView.text = "Error: ${e.message}"
-                            }
-                        }
-                    }
+                    // モデルダウンロードはRun/Record押下時(ensureSpeechReady)まで遅延する
                     return
                 }
 
                 AlgorithmType.TEXT_TO_SPEECH -> {
-                    runOnUiThread {
-                        voiceStatusTextView.text = "Status: Downloading model..."
-                        voiceGenerateButton.isEnabled = false
-                    }
-                    voiceSample.modelType = selectedVoiceModelType
-                    cameraExecutor.execute {
-                        val success = voiceSample.initializeVoice(envId = selectedEnvId, listener = object : AiliaVoiceSample.DownloadListener {
-                            override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                runOnUiThread {
-                                    voiceStatusTextView.text = "Status: Downloading $fileName... $percent%"
-                                }
-                            }
-                            override fun onComplete() {
-                                Log.i("AILIA_Main", "Voice model download complete")
-                            }
-                            override fun onError(error: String) {
-                                runOnUiThread {
-                                    voiceStatusTextView.text = "Status: Error - $error"
-                                }
-                            }
-                        })
-                        runOnUiThread {
-                            isInitialized = success
-                            if (success) {
-                                voiceStatusTextView.text = "Status: Ready"
-                                voiceGenerateButton.isEnabled = true
-                                setupVoiceGenerateButton()
-                            } else {
-                                voiceStatusTextView.text = "Status: Initialization failed"
-                            }
-                        }
-                    }
-                    return // Don't wait for async initialization
+                    // モデルダウンロードはGenerate押下時(setupVoiceGenerateButton)まで遅延する
+                    return
                 }
 
-                AlgorithmType.LLM -> {
-                    runOnUiThread {
-                        llmStatusTextView.text = "Status: Downloading model..."
-                        llmSendButton.isEnabled = false
-                        algorithmSpinner.isEnabled = false
-                    }
-                    cameraExecutor.execute {
-                        val success = llmSample.initialize(this@MainActivity, object : ModelDownloader.DownloadListener {
-                            override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
-                                val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                runOnUiThread {
-                                    llmStatusTextView.text = "Status: Downloading model... $percent%"
-                                }
-                            }
-                            override fun onComplete(file: java.io.File) {
-                                Log.i("AILIA_Main", "Model download complete")
-                            }
-                            override fun onError(error: String) {
-                                runOnUiThread {
-                                    llmStatusTextView.text = "Status: Download error - $error"
-                                }
-                            }
-                        })
-                        runOnUiThread {
-                            isInitialized = success
-                            algorithmSpinner.isEnabled = true
-                            if (success) {
-                                llmStatusTextView.text = "Status: Ready"
-                                llmSendButton.isEnabled = true
-                                setupLLMSendButton()
-                            } else {
-                                llmStatusTextView.text = "Status: Initialization failed"
-                            }
-                        }
-                    }
-                    return // Don't wait for async initialization
-                }
-                AlgorithmType.MULTIMODAL_LLM -> {
-                    runOnUiThread {
-                        llmStatusTextView.text = "Status: Downloading model..."
-                        llmSendButton.isEnabled = false
-                        algorithmSpinner.isEnabled = false
-                    }
-                    cameraExecutor.execute {
-                        val success = multimodalLLMSample.initialize(this@MainActivity, object : AiliaMultimodalLLMSample.MultimodalLLMListener {
-                            override fun onDownloadProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                runOnUiThread {
-                                    llmStatusTextView.text = "Status: Downloading $fileName... $percent%"
-                                }
-                            }
-                            override fun onStatus(status: String) {}
-                            override fun onToken(token: String) {}
-                            override fun onComplete(fullResponse: String) {}
-                            override fun onError(error: String) {
-                                runOnUiThread {
-                                    llmStatusTextView.text = "Status: Error - $error"
-                                }
-                            }
-                        })
-                        Log.i("AILIA_Main", "MultimodalLLM: init done on cameraExecutor, success=$success, posting to UI thread")
-                        runOnUiThread {
-                            Log.i("AILIA_Main", "MultimodalLLM: runOnUiThread callback, success=$success, currentAlgorithm=$currentAlgorithm")
-                            isInitialized = success
-                            algorithmSpinner.isEnabled = true
-                            if (success) {
-                                llmStatusTextView.text = "Status: Ready"
-                                llmSendButton.isEnabled = true
-                                setupMultimodalLLMSendButton()
-                                // Load the sample image
-                                loadSampleImageForMultimodal()
-                                Log.i("AILIA_Main", "MultimodalLLM: UI updated to Ready")
-                            } else {
-                                llmStatusTextView.text = "Status: Initialization failed"
-                                Log.i("AILIA_Main", "MultimodalLLM: initialization failed")
-                            }
-                        }
-                    }
-                    return // Don't wait for async initialization
+                AlgorithmType.LLM, AlgorithmType.MULTIMODAL_LLM -> {
+                    // モデルダウンロードはSend押下時(initialize*Async)まで遅延する
+                    return
                 }
             }
 
@@ -1397,6 +1517,69 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** チャット吹き出しを追加する(ユーザー右寄せ/AI左寄せ) */
+    private fun addChatBubble(message: String, isUser: Boolean): TextView {
+        val bubble = TextView(this)
+        bubble.text = message
+        bubble.setTextColor(Color.BLACK)
+        bubble.textSize = 14f
+        bubble.setBackgroundResource(if (isUser) R.drawable.chat_bubble_user else R.drawable.chat_bubble_assistant)
+        val pad = (10 * resources.displayMetrics.density).toInt()
+        bubble.setPadding(pad, pad, pad, pad)
+        bubble.maxWidth = (resources.displayMetrics.widthPixels * 0.75f).toInt()
+        val params = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        val margin = (4 * resources.displayMetrics.density).toInt()
+        params.setMargins(margin, margin, margin, margin)
+        params.gravity = if (isUser) android.view.Gravity.END else android.view.Gravity.START
+        llmChatContainer.addView(bubble, params)
+        scrollResultToBottom()
+        return bubble
+    }
+
+    private fun scrollResultToBottom() {
+        rootScrollView.post { rootScrollView.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    /** LLMモデルをダウンロード+初期化し、成功時にonReadyをUIスレッドで呼ぶ */
+    private fun initializeLLMAsync(onReady: (() -> Unit)? = null) {
+        llmStatusTextView.text = "Status: Downloading model..."
+        llmSendButton.isEnabled = false
+        algorithmSpinner.isEnabled = false
+        llmSample.modelType = selectedLLMModelType
+        cameraExecutor.execute {
+            val success = llmSample.initialize(this@MainActivity, object : ModelDownloader.DownloadListener {
+                override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
+                    val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
+                    runOnUiThread {
+                        llmStatusTextView.text = "Status: Downloading model... $percent%"
+                    }
+                }
+                override fun onComplete(file: java.io.File) {
+                    Log.i("AILIA_Main", "Model download complete")
+                }
+                override fun onError(error: String) {
+                    runOnUiThread {
+                        llmStatusTextView.text = "Status: Download error - $error"
+                    }
+                }
+            })
+            runOnUiThread {
+                isInitialized = success
+                algorithmSpinner.isEnabled = true
+                if (success) {
+                    llmStatusTextView.text = "Status: Ready"
+                    llmSendButton.isEnabled = true
+                    onReady?.invoke()
+                } else {
+                    llmStatusTextView.text = "Status: Initialization failed"
+                }
+            }
+        }
+    }
+
     private fun setupLLMSendButton() {
         llmSendButton.setOnClickListener {
             val userInput = llmInputEditText.text.toString().trim()
@@ -1404,36 +1587,89 @@ class MainActivity : AppCompatActivity() {
                 llmStatusTextView.text = "Status: Please enter a message"
                 return@setOnClickListener
             }
+            // モデルダウンロードはSend押下時に行う
+            if (!isInitialized) {
+                initializeLLMAsync {
+                    performLLMChat(userInput)
+                }
+            } else {
+                performLLMChat(userInput)
+            }
+        }
+    }
 
-            llmSendButton.isEnabled = false
-            algorithmSpinner.isEnabled = false
-            llmStatusTextView.text = "Status: Generating..."
-            llmOutputTextView.text = ""
+    private fun performLLMChat(userInput: String) {
+        llmSendButton.isEnabled = false
+        algorithmSpinner.isEnabled = false
+        llmStatusTextView.text = "Status: Generating..."
+        // チャット風表示: 履歴は消さず、ユーザー発言とAI応答の吹き出しを追加する
+        addChatBubble(userInput, isUser = true)
+        val assistantBubble = addChatBubble("", isUser = false)
+        llmInputEditText.setText("")
 
-            cameraExecutor.execute {
-                val processingTime = llmSample.chat(userInput, object : AiliaLLMSample.LLMListener {
-                    override fun onToken(token: String) {
-                        runOnUiThread {
-                            llmOutputTextView.append(token)
-                        }
+        cameraExecutor.execute {
+            val processingTime = llmSample.chat(userInput, object : AiliaLLMSample.LLMListener {
+                override fun onToken(token: String) {
+                    runOnUiThread {
+                        assistantBubble.append(token)
+                        scrollResultToBottom()
                     }
-                    override fun onComplete(fullResponse: String) {
-                        runOnUiThread {
-                            llmStatusTextView.text = "Status: Complete"
-                        }
+                }
+                override fun onComplete(fullResponse: String) {
+                    runOnUiThread {
+                        llmStatusTextView.text = "Status: Complete"
                     }
-                    override fun onError(error: String) {
-                        runOnUiThread {
-                            llmStatusTextView.text = "Status: Error - $error"
-                        }
+                }
+                override fun onError(error: String) {
+                    runOnUiThread {
+                        llmStatusTextView.text = "Status: Error - $error"
                     }
-                })
-                runOnUiThread {
+                }
+            })
+            runOnUiThread {
+                llmSendButton.isEnabled = true
+                algorithmSpinner.isEnabled = true
+                if (processingTime > 0) {
+                    processingTimeTextView.text = "Processing Time: ${processingTime}ms (LLM)"
+                }
+            }
+        }
+    }
+
+    /** MultimodalLLMモデルをダウンロード+初期化し、成功時にonReadyをUIスレッドで呼ぶ */
+    private fun initializeMultimodalAsync(onReady: (() -> Unit)? = null) {
+        llmStatusTextView.text = "Status: Downloading model..."
+        llmSendButton.isEnabled = false
+        algorithmSpinner.isEnabled = false
+        cameraExecutor.execute {
+            val success = multimodalLLMSample.initialize(this@MainActivity, object : AiliaMultimodalLLMSample.MultimodalLLMListener {
+                override fun onDownloadProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                    val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
+                    runOnUiThread {
+                        llmStatusTextView.text = "Status: Downloading $fileName... $percent%"
+                    }
+                }
+                override fun onStatus(status: String) {}
+                override fun onToken(token: String) {}
+                override fun onComplete(fullResponse: String) {}
+                override fun onError(error: String) {
+                    runOnUiThread {
+                        llmStatusTextView.text = "Status: Error - $error"
+                    }
+                }
+            })
+            Log.i("AILIA_Main", "MultimodalLLM: init done on cameraExecutor, success=$success")
+            runOnUiThread {
+                isInitialized = success
+                algorithmSpinner.isEnabled = true
+                if (success) {
+                    llmStatusTextView.text = "Status: Ready"
                     llmSendButton.isEnabled = true
-                    algorithmSpinner.isEnabled = true
-                    if (processingTime > 0) {
-                        processingTimeTextView.text = "Processing Time: ${processingTime}ms (LLM)"
-                    }
+                    // Load the sample image (image mode)
+                    loadSampleImageForMultimodal()
+                    onReady?.invoke()
+                } else {
+                    llmStatusTextView.text = "Status: Initialization failed"
                 }
             }
         }
@@ -1446,7 +1682,18 @@ class MainActivity : AppCompatActivity() {
                 llmStatusTextView.text = "Status: Please enter a question about the image"
                 return@setOnClickListener
             }
+            // モデルダウンロードはSend押下時に行う
+            if (!isInitialized) {
+                initializeMultimodalAsync {
+                    performMultimodalChat(userInput)
+                }
+            } else {
+                performMultimodalChat(userInput)
+            }
+        }
+    }
 
+    private fun performMultimodalChat(userInput: String) {
             llmSendButton.isEnabled = false
             algorithmSpinner.isEnabled = false
             modeRadioGroup.isEnabled = false
@@ -1454,7 +1701,10 @@ class MainActivity : AppCompatActivity() {
                 modeRadioGroup.getChildAt(i).isEnabled = false
             }
             llmStatusTextView.text = "Status: Generating..."
-            llmOutputTextView.text = ""
+            // チャット風表示: 履歴は消さず、ユーザー発言とAI応答の吹き出しを追加する
+            addChatBubble(userInput, isUser = true)
+            val assistantBubble = addChatBubble("", isUser = false)
+            llmInputEditText.setText("")
 
             val isCameraMode = modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton
             val imagePath = if (isCameraMode && latestCameraBitmap != null) {
@@ -1477,7 +1727,8 @@ class MainActivity : AppCompatActivity() {
                     }
                     override fun onToken(token: String) {
                         runOnUiThread {
-                            llmOutputTextView.append(token)
+                            assistantBubble.append(token)
+                            scrollResultToBottom()
                         }
                     }
                     override fun onComplete(fullResponse: String) {
@@ -1503,7 +1754,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-        }
     }
 
     private fun loadSampleImageForMultimodal() {
@@ -1518,101 +1768,140 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupVoiceModelSpinner() {
-        val voiceModels = arrayOf("V1", "V2", "V3", "V2-Pro")
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, voiceModels)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        voiceModelSpinner.adapter = adapter
+    /** 各Voiceモデルのデフォルト入力テキスト(V1は英語モデルのため英文) */
+    private fun defaultVoiceText(type: VoiceModelType): String {
+        return if (type == VoiceModelType.GPT_SOVITS_V1) {
+            "Hello world. We will introduce ailia AI voice."
+        } else {
+            "こんにちは。今日はいい天気ですね。"
+        }
+    }
 
-        voiceModelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val newType = when (position) {
-                    0 -> VoiceModelType.GPT_SOVITS_V1
-                    1 -> VoiceModelType.GPT_SOVITS_V2
-                    2 -> VoiceModelType.GPT_SOVITS_V3
-                    3 -> VoiceModelType.GPT_SOVITS_V2_PRO
-                    else -> VoiceModelType.GPT_SOVITS_V1
-                }
-                if (newType != selectedVoiceModelType) {
-                    selectedVoiceModelType = newType
-                    // モデル切り替え時に再初期化
-                    if (currentAlgorithm == AlgorithmType.TEXT_TO_SPEECH) {
-                        voiceSample.releaseVoice()
-                        isInitialized = false
-                        voiceGenerateButton.isEnabled = false
-                        voiceResultTextView.text = ""
-                        initializeAilia()
-                    }
-                }
+    /**
+     * 入力テキストが日本語か英語かを判定してG2Pの言語を返す。
+     * ひらがな/カタカナ/漢字が含まれていれば"ja"、それ以外は"en"。
+     */
+    private fun detectVoiceTextLanguage(text: String): String {
+        for (ch in text) {
+            val block = Character.UnicodeBlock.of(ch)
+            if (block == Character.UnicodeBlock.HIRAGANA ||
+                block == Character.UnicodeBlock.KATAKANA ||
+                block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS) {
+                return "ja"
             }
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        return "en"
+    }
+
+    private fun setupVoiceReplayButton() {
+        voiceReplayButton.setOnClickListener {
+            val audio = voiceSample.lastAudioData ?: return@setOnClickListener
+            voiceSample.playAudio(audio, voiceSample.lastAudioChannels, voiceSample.lastAudioSampleRate)
+            voiceWaveformView.startPlayback(audio, voiceSample.lastAudioChannels, voiceSample.lastAudioSampleRate)
         }
     }
 
     private fun setupVoiceGenerateButton() {
         voiceGenerateButton.setOnClickListener {
+            val inputText = voiceInputEditText.text.toString().trim()
+            if (inputText.isEmpty()) {
+                voiceStatusTextView.text = "Status: Please enter text to speak"
+                return@setOnClickListener
+            }
             voiceGenerateButton.isEnabled = false
-            voiceStatusTextView.text = "Status: Generating..."
             voiceResultTextView.text = ""
+            voiceWaveformView.clear()
+            voiceStatusTextView.text =
+                if (isInitialized) "Status: Generating..." else "Status: Downloading model..."
 
             cameraExecutor.execute {
-                val refAudio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.reference_audio_girl))
-                val text: String
-                val textLang: String
-                if (selectedVoiceModelType == VoiceModelType.GPT_SOVITS_V1) {
-                    text = "Hello world. We will introduce ailia AI voice."
-                    textLang = "en"
-                } else {
-                    text = "こんにちは。今日はいい天気ですね。"
-                    textLang = "ja"
+                // モデルダウンロード+初期化はGenerate押下時に行う
+                if (!isInitialized) {
+                    voiceSample.modelType = selectedVoiceModelType
+                    val success = voiceSample.initializeVoice(envId = selectedEnvId, listener = object : AiliaVoiceSample.DownloadListener {
+                        override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                            val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
+                            runOnUiThread {
+                                voiceStatusTextView.text = "Status: Downloading $fileName... $percent%"
+                            }
+                        }
+                        override fun onComplete() {
+                            Log.i("AILIA_Main", "Voice model download complete")
+                        }
+                        override fun onError(error: String) {
+                            runOnUiThread {
+                                voiceStatusTextView.text = "Status: Error - $error"
+                            }
+                        }
+                    })
+                    isInitialized = success
+                    if (!success) {
+                        runOnUiThread {
+                            voiceGenerateButton.isEnabled = true
+                            voiceStatusTextView.text = "Status: Initialization failed"
+                        }
+                        return@execute
+                    }
+                    runOnUiThread {
+                        voiceStatusTextView.text = "Status: Generating..."
+                    }
                 }
+
+                val refAudio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.reference_audio_girl))
+                // 入力テキストの日英を判定してG2Pの言語を切り替える
+                val textLang = detectVoiceTextLanguage(inputText)
                 val inferenceTime = voiceSample.textToSpeech(
                     refAudio.audioData,
                     refAudio.channels,
                     refAudio.sampleRate,
                     "水をマレーシアから買わなくてはならない。",
                     "ja",
-                    text,
+                    inputText,
                     textLang,
                 )
                 runOnUiThread {
                     voiceGenerateButton.isEnabled = true
                     voiceStatusTextView.text = "Status: Complete"
-                    voiceResultTextView.text = "${selectedVoiceModelType.name} Generated"
+                    voiceResultTextView.text = "${selectedVoiceModelType.displayName} Generated"
                     if (inferenceTime > 0) {
                         processingTimeTextView.text = "Processing Time: ${inferenceTime}ms (Voice)"
+                    }
+                    // 合成音声の波形を再生位置に追従して表示する
+                    voiceSample.lastAudioData?.let { audio ->
+                        voiceWaveformView.startPlayback(audio, voiceSample.lastAudioChannels, voiceSample.lastAudioSampleRate)
+                        // 生成後はリプレイボタンを表示する
+                        voiceReplayButton.visibility = View.VISIBLE
                     }
                 }
             }
         }
     }
 
-    private fun setupSpeechModelSpinner() {
-        val speechModels = SpeechModelType.values().map { it.displayName }.toTypedArray()
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, speechModels)
+    private fun setupSpeechLanguageSpinner() {
+        val languages = arrayOf("ja", "en", "auto")
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, languages)
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        speechModelSpinner.adapter = adapter
+        speechLanguageSpinner.adapter = adapter
 
-        // Set current selection
-        val currentIndex = SpeechModelType.values().indexOf(selectedSpeechModelType)
+        val currentIndex = languages.indexOf(selectedSpeechLanguage)
         if (currentIndex >= 0) {
-            speechModelSpinner.setSelection(currentIndex)
+            speechLanguageSpinner.setSelection(currentIndex)
         }
 
-        speechModelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+        speechLanguageSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val newType = SpeechModelType.values()[position]
-                if (newType != selectedSpeechModelType) {
-                    selectedSpeechModelType = newType
-                    // Stop recording if active
-                    stopMicRecording()
-                    // Re-download and re-initialize with new model
+                val newLanguage = languages[position]
+                if (newLanguage != selectedSpeechLanguage) {
+                    selectedSpeechLanguage = newLanguage
+                    speechSample.language = newLanguage
+                    // 言語変更のため要再初期化(ダウンロードはRun/Record押下時)
                     if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
+                        stopMicRecording()
                         speechSample.releaseSpeech()
                         isInitialized = false
                         isDownloadingModel.set(false)
+                        clearTranscript()
                         classificationResultTextView.text = "Speech Result: --"
-                        initializeAilia()
                     }
                 }
             }
@@ -1626,27 +1915,35 @@ class MainActivity : AppCompatActivity() {
                 R.id.wavRadioButton -> {
                     speechRunButton.visibility = View.VISIBLE
                     micRecordButton.visibility = View.GONE
-                    waveformImageView.visibility = View.GONE
+                    waveformView.visibility = View.GONE
                     waveformInfoTextView.visibility = View.GONE
+                    liveModeCheckBox.visibility = View.GONE
+                    speechLanguageLabel.visibility = View.GONE
+                    speechLanguageSpinner.visibility = View.GONE
                     stopMicRecording()
-                    // Re-initialize in non-live mode
+                    // liveモード設定が変わるため要再初期化(ダウンロードはRun押下時)
                     speechSample.releaseSpeech()
                     isInitialized = false
                     isDownloadingModel.set(false)
+                    clearTranscript()
                     classificationResultTextView.text = "Speech Result: --"
-                    initializeAilia()
                 }
                 R.id.micRadioButton -> {
                     speechRunButton.visibility = View.GONE
                     micRecordButton.visibility = View.VISIBLE
-                    waveformImageView.visibility = View.VISIBLE
+                    waveformView.visibility = View.VISIBLE
+                    waveformView.clear()
                     waveformInfoTextView.visibility = View.VISIBLE
-                    // Re-initialize in live mode
+                    waveformInfoTextView.text = ""
+                    liveModeCheckBox.visibility = View.VISIBLE
+                    speechLanguageLabel.visibility = View.VISIBLE
+                    speechLanguageSpinner.visibility = View.VISIBLE
+                    // liveモード設定が変わるため要再初期化(ダウンロードはRecord押下時)
                     speechSample.releaseSpeech()
                     isInitialized = false
                     isDownloadingModel.set(false)
+                    clearTranscript()
                     classificationResultTextView.text = "Speech Result: (tap Record)"
-                    initializeAilia()
                 }
             }
         }
@@ -1655,41 +1952,139 @@ class MainActivity : AppCompatActivity() {
     private fun setupDiarizationCheckBox() {
         diarizationCheckBox.setOnCheckedChangeListener { _, isChecked ->
             speechSample.diarizationEnabled = isChecked
-            // Re-initialize to apply diarization setting
+            // 設定変更のため要再初期化(ダウンロードはRun/Record押下時)
             stopMicRecording()
             speechSample.releaseSpeech()
             isInitialized = false
             isDownloadingModel.set(false)
+            clearTranscript()
             classificationResultTextView.text = "Speech Result: --"
-            initializeAilia()
+        }
+    }
+
+    private fun setupLiveModeCheckBox() {
+        liveModeCheckBox.setOnCheckedChangeListener { _, _ ->
+            // LIVEフラグ変更のため要再初期化(ダウンロードはRun/Record押下時)
+            stopMicRecording()
+            speechSample.releaseSpeech()
+            isInitialized = false
+            isDownloadingModel.set(false)
+            clearTranscript()
+            classificationResultTextView.text = "Speech Result: --"
+        }
+    }
+
+    /** 議事録風トランスクリプトに行を追記して表示を更新する(UIスレッドで呼ぶこと) */
+    private fun appendTranscriptLines(lines: List<String>) {
+        if (lines.isEmpty()) return
+        speechTranscript.addAll(lines)
+        transcriptTextView.text = speechTranscript.joinToString("\n")
+        scrollResultToBottom()
+    }
+
+    private fun clearTranscript() {
+        speechTranscript.clear()
+        transcriptTextView.text = ""
+    }
+
+    /**
+     * Speechモデルを必要ならダウンロード+初期化してからonReadyをUIスレッドで呼ぶ。
+     * モデルダウンロードはRun/Record押下時に初めて行う。
+     */
+    private fun ensureSpeechReady(onReady: () -> Unit) {
+        if (isInitialized) {
+            onReady()
+            return
+        }
+        if (isDownloadingModel.get()) return
+        isDownloadingModel.set(true)
+        val isMicMode = speechModeRadioGroup.checkedRadioButtonId == R.id.micRadioButton
+        // LIVEフラグはLive Modeチェックボックスで有効化(マイクモード時のみ)
+        val liveMode = isMicMode && liveModeCheckBox.isChecked
+        processingTimeTextView.text = "Downloading speech model (${selectedSpeechModelType.displayName})..."
+        speechRunButton.isEnabled = false
+        micRecordButton.isEnabled = false
+        speechExecutor.execute {
+            try {
+                val downloaded = speechSample.downloadModel(selectedSpeechModelType, object : AiliaSpeechSample.DownloadListener {
+                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                        val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
+                        runOnUiThread {
+                            processingTimeTextView.text = "Downloading $fileName... $percent%"
+                        }
+                    }
+                    override fun onComplete() {}
+                    override fun onError(error: String) {
+                        runOnUiThread {
+                            processingTimeTextView.text = "Download error: $error"
+                        }
+                    }
+                })
+                var success = false
+                if (downloaded) {
+                    // Wavモードは常にauto、Micモードのみ言語選択を適用する
+                    val language = if (isMicMode) selectedSpeechLanguage else "auto"
+                    Log.i("AILIA_Main", "Speech: initializing with envId=$selectedEnvId, liveMode=$liveMode, language=$language")
+                    speechSample.language = language
+                    success = speechSample.initializeSpeech(selectedEnvId, liveMode = liveMode)
+                    isInitialized = success
+                }
+                isDownloadingModel.set(false)
+                runOnUiThread {
+                    speechRunButton.isEnabled = true
+                    micRecordButton.isEnabled = true
+                    if (success) {
+                        processingTimeTextView.text = "${selectedSpeechModelType.displayName} ready"
+                        onReady()
+                    } else {
+                        processingTimeTextView.text = "Failed to initialize speech model"
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("AILIA_Main", "Speech: download/init error", e)
+                isDownloadingModel.set(false)
+                runOnUiThread {
+                    speechRunButton.isEnabled = true
+                    micRecordButton.isEnabled = true
+                    processingTimeTextView.text = "Error: ${e.message}"
+                }
+            }
         }
     }
 
     private fun setupSpeechRunButton() {
         speechRunButton.setOnClickListener {
-            if (!isInitialized) {
-                classificationResultTextView.text = "Speech model not ready"
+            if (isProcessing.get() || isDownloadingModel.get()) {
                 return@setOnClickListener
             }
-            if (isProcessing.get()) {
-                return@setOnClickListener
-            }
-            classificationResultTextView.text = "Speech Result: Processing..."
-            cameraExecutor.execute {
-                try {
-                    val audio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.demo))
-                    val startTime = System.nanoTime()
-                    val text: String = speechSample.process(audio.audioData, audio.channels, audio.sampleRate)
-                    val endTime = System.nanoTime()
-                    val timeMs = (endTime - startTime) / 1000000
-                    runOnUiThread {
-                        classificationResultTextView.text = "Speech Result:\n$text"
-                        processingTimeTextView.text = "Processing Time: $timeMs ms"
-                    }
-                } catch (e: Exception) {
-                    Log.e("AILIA_Main", "Speech run error", e)
-                    runOnUiThread {
-                        classificationResultTextView.text = "Speech Result: Error - ${e.message}"
+            speechRunButton.isEnabled = false
+            ensureSpeechReady {
+                // 認識結果が表示されるまでRunをグレーアウトする
+                speechRunButton.isEnabled = false
+                clearTranscript()
+                classificationResultTextView.text = "Speech Result: Processing..."
+                speechExecutor.execute {
+                    try {
+                        val audio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.demo))
+                        val startTime = System.nanoTime()
+                        val lines = speechSample.process(audio.audioData, audio.channels, audio.sampleRate)
+                        val endTime = System.nanoTime()
+                        val timeMs = (endTime - startTime) / 1000000
+                        runOnUiThread {
+                            appendTranscriptLines(lines)
+                            classificationResultTextView.text =
+                                if (lines.isEmpty()) "Speech Result: (no speech detected)" else "Speech Result:"
+                            processingTimeTextView.text = "Processing Time: $timeMs ms"
+                        }
+                    } catch (e: Exception) {
+                        Log.e("AILIA_Main", "Speech run error", e)
+                        runOnUiThread {
+                            classificationResultTextView.text = "Speech Result: Error - ${e.message}"
+                        }
+                    } finally {
+                        runOnUiThread {
+                            speechRunButton.isEnabled = true
+                        }
                     }
                 }
             }
@@ -1701,7 +2096,12 @@ class MainActivity : AppCompatActivity() {
             if (isRecording.get()) {
                 stopMicRecording()
             } else {
-                startMicRecording()
+                if (isDownloadingModel.get()) {
+                    return@setOnClickListener
+                }
+                ensureSpeechReady {
+                    startMicRecording()
+                }
             }
         }
     }
@@ -1720,10 +2120,11 @@ class MainActivity : AppCompatActivity() {
         val sampleRate = 16000
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
         val audioFormat = AudioFormat.ENCODING_PCM_FLOAT
-        // Read 1 second of audio per chunk (matching WAV test chunk size)
-        val readChunkSize = sampleRate
+        // 波形表示を滑らかにするため100msごとに読み出し、認識には従来通り1秒分をまとめて渡す
+        val readChunkSize = sampleRate / 10
+        val recognitionChunkSize = sampleRate
         // AudioRecord internal buffer: at least 2 seconds
-        val audioRecordBufferBytes = readChunkSize * 4 * 2
+        val audioRecordBufferBytes = recognitionChunkSize * 4 * 2
 
         try {
             audioRecord = AudioRecord(
@@ -1744,65 +2145,76 @@ class MainActivity : AppCompatActivity() {
             isRecording.set(true)
             micRecordButton.text = "Stop"
             classificationResultTextView.text = "Recording..."
+            clearTranscript()
 
-            // Start reading audio data on background thread
+            // 波形表示とREC経過時間の初期化
+            waveformView.clear()
+            recStartMs = android.os.SystemClock.elapsedRealtime()
+            waveformInfoTextView.text = "● REC 00:00"
+            recTimerHandler.post(recTimerRunnable)
+
+            // マイク読み出しループ。認識(transcribe)は専用のspeechExecutorへ
+            // 非同期に投げることで、認識中もマイク読み出しと波形表示を止めない。
             cameraExecutor.execute {
                 val floatBuffer = FloatArray(readChunkSize)
-                val accumulatedText = StringBuilder()
+                val recognitionBuffer = FloatArray(recognitionChunkSize)
+                var recognitionFill = 0
 
                 while (isRecording.get()) {
                     val readResult = audioRecord?.read(floatBuffer, 0, floatBuffer.size, AudioRecord.READ_BLOCKING) ?: -1
                     if (readResult > 0) {
-                        // Log audio stats for debugging
-                        var minV = Float.MAX_VALUE
-                        var maxV = -Float.MAX_VALUE
-                        var sumSq = 0.0
-                        for (i in 0 until readResult) {
-                            val v = floatBuffer[i]
-                            if (v < minV) minV = v
-                            if (v > maxV) maxV = v
-                            sumSq += v * v
+                        // 波形表示(約10msごとのピーク振幅ブロック、PCM_FLOATは[-1.0, 1.0])
+                        val blocks = WaveformView.peakBlocks(floatBuffer, readResult, sampleRate)
+                        runOnUiThread {
+                            waveformView.push(blocks)
                         }
-                        val rmsV = Math.sqrt(sumSq / readResult)
-                        Log.i("AILIA_Main", "Mic PCM: samples=$readResult min=${"%.6f".format(minV)} max=${"%.6f".format(maxV)} rms=${"%.6f".format(rmsV)}")
 
-                        // Draw waveform for debugging (PCM_FLOAT is already [-1.0, 1.0])
-                        drawWaveform(floatBuffer, readResult)
-
-                        // Guard against speech being released during recording
-                        if (!isInitialized) break
-                        try {
-                            val text = speechSample.pushLiveAudio(floatBuffer.copyOf(readResult), 1, sampleRate)
-                            if (text.isNotEmpty()) {
-                                accumulatedText.clear()
-                                accumulatedText.append(text)
-                                runOnUiThread {
-                                    classificationResultTextView.text = "Speech Result (live):\n$text"
+                        // 認識には1秒分をまとめて渡す
+                        val toCopy = minOf(readResult, recognitionChunkSize - recognitionFill)
+                        System.arraycopy(floatBuffer, 0, recognitionBuffer, recognitionFill, toCopy)
+                        recognitionFill += toCopy
+                        if (recognitionFill < recognitionChunkSize) {
+                            continue
+                        }
+                        val chunk = recognitionBuffer.copyOf(recognitionFill)
+                        recognitionFill = 0
+                        speechExecutor.execute {
+                            if (!isInitialized) return@execute
+                            try {
+                                val lines = speechSample.pushLiveAudio(chunk, 1, sampleRate)
+                                if (lines.isNotEmpty()) {
+                                    runOnUiThread {
+                                        appendTranscriptLines(lines)
+                                    }
                                 }
+                            } catch (e: Exception) {
+                                Log.e("AILIA_Main", "pushLiveAudio error (speech may have been released): ${e.message}")
                             }
-                        } catch (e: Exception) {
-                            Log.e("AILIA_Main", "pushLiveAudio error (speech may have been released): ${e.message}")
-                            break
                         }
                     }
                 }
 
-                // Finalize when recording stops (guard against speech being released)
-                try {
-                    if (isInitialized) {
-                        val finalText = speechSample.finalizeLiveAudio()
-                        runOnUiThread {
-                            if (finalText.isNotEmpty()) {
-                                classificationResultTextView.text = "Speech Result:\n$finalText"
-                            } else if (accumulatedText.isNotEmpty()) {
-                                classificationResultTextView.text = "Speech Result:\n$accumulatedText"
-                            } else {
-                                classificationResultTextView.text = "Speech Result: (no speech detected)"
+                // 録音停止後、1秒に満たない残りの音声を送ってから確定処理
+                // (speechExecutorは単一スレッドなので、キュー済みのチャンク処理後に実行される)
+                val tail = recognitionBuffer.copyOf(recognitionFill)
+                speechExecutor.execute {
+                    if (!isInitialized) return@execute
+                    try {
+                        if (tail.isNotEmpty()) {
+                            val lines = speechSample.pushLiveAudio(tail, 1, sampleRate)
+                            runOnUiThread {
+                                appendTranscriptLines(lines)
                             }
                         }
+                        val finalLines = speechSample.finalizeLiveAudio()
+                        runOnUiThread {
+                            appendTranscriptLines(finalLines)
+                            classificationResultTextView.text =
+                                if (speechTranscript.isEmpty()) "Speech Result: (no speech detected)" else "Speech Result:"
+                        }
+                    } catch (e: Exception) {
+                        Log.e("AILIA_Main", "finalizeLiveAudio error (speech may have been released): ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.e("AILIA_Main", "finalizeLiveAudio error (speech may have been released): ${e.message}")
                 }
             }
         } catch (e: SecurityException) {
@@ -1828,95 +2240,38 @@ class MainActivity : AppCompatActivity() {
                 Log.e("AILIA_Main", "Error releasing AudioRecord: ${e.message}")
             }
             audioRecord = null
+            recTimerHandler.removeCallbacks(recTimerRunnable)
             runOnUiThread {
                 micRecordButton.text = "Record"
+                waveformInfoTextView.text = ""
             }
-        }
-    }
-
-    /**
-     * Draws waveform from float PCM data [-1.0, 1.0] and shows debug info (min, max, RMS).
-     */
-    private fun drawWaveform(floatBuffer: FloatArray, readSamples: Int) {
-        val width = 800
-        val height = 240
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-
-        // Background
-        canvas.drawColor(Color.parseColor("#1A1A2E"))
-
-        // Center line
-        val centerLinePaint = Paint().apply {
-            color = Color.parseColor("#444466")
-            strokeWidth = 1f
-        }
-        canvas.drawLine(0f, height / 2f, width.toFloat(), height / 2f, centerLinePaint)
-
-        // Waveform
-        val waveformPaint = Paint().apply {
-            color = Color.parseColor("#00FF88")
-            strokeWidth = 1.5f
-            isAntiAlias = true
-        }
-
-        val step = maxOf(1, readSamples / width)
-        val centerY = height / 2f
-        var prevX = 0f
-        var prevY = centerY
-
-        // Calculate min, max, RMS
-        var minVal = Float.MAX_VALUE
-        var maxVal = Float.MIN_VALUE
-        var sumSquared = 0.0
-
-        for (i in 0 until readSamples) {
-            val v = floatBuffer[i]
-            if (v < minVal) minVal = v
-            if (v > maxVal) maxVal = v
-            sumSquared += v * v
-        }
-        val rms = Math.sqrt(sumSquared / readSamples).toFloat()
-
-        // Draw waveform
-        for (x in 0 until width) {
-            val sampleIndex = x * step
-            if (sampleIndex >= readSamples) break
-            val sample = floatBuffer[sampleIndex]
-            val y = centerY - sample * centerY * 0.9f
-            if (x > 0) {
-                canvas.drawLine(prevX, prevY, x.toFloat(), y, waveformPaint)
-            }
-            prevX = x.toFloat()
-            prevY = y
-        }
-
-        // RMS bar
-        val rmsPaint = Paint().apply {
-            color = Color.parseColor("#FF6644")
-            strokeWidth = 2f
-        }
-        val rmsY = centerY - rms * centerY * 0.9f
-        canvas.drawLine(0f, rmsY, width.toFloat(), rmsY, rmsPaint)
-        val rmsYNeg = centerY + rms * centerY * 0.9f
-        canvas.drawLine(0f, rmsYNeg, width.toFloat(), rmsYNeg, rmsPaint)
-
-        runOnUiThread {
-            waveformImageView.setImageBitmap(bitmap)
-            waveformInfoTextView.text = "Min=%.4f  Max=%.4f  RMS=%.4f  Samples=%d".format(minVal, maxVal, rms, readSamples)
         }
     }
 
     private fun processImageMode() {
         // Speech to Text uses speech model spinner and Wav/Mic mode
+        // モデルダウンロードはRun/Record押下時まで遅延する
         if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
             if (!isInitialized) {
-                setupSpeechModelSpinner()
+                setupSpeechLanguageSpinner()
                 setupSpeechModeRadioGroup()
                 setupDiarizationCheckBox()
+                setupLiveModeCheckBox()
                 setupSpeechRunButton()
                 setupMicRecordButton()
-                initializeAilia()
+            }
+            return
+        }
+
+        // 画像系/TokenizeはRunボタンが押されるまでダウンロード・実行しない
+        if (needsVisionRunButton() && !runRequested) {
+            // Run押下前でも入力画像は表示しておく(Imageモードのみ。カメラモードはプレビューが見える)
+            if (currentAlgorithm != AlgorithmType.TOKENIZE &&
+                modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
+                val options = Options()
+                options.inScaled = false
+                val personBmp = BitmapFactory.decodeResource(this.resources, R.raw.person, options)
+                imageView.setImageBitmap(personBmp)
             }
             return
         }
@@ -1939,24 +2294,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // TEXT_TO_SPEECHは非同期初期化のため、このメソッドでは処理しない
+        // TEXT_TO_SPEECHはGenerate押下時にダウンロード+初期化する
         if (currentAlgorithm == AlgorithmType.TEXT_TO_SPEECH) {
             if (!isInitialized) {
-                setupVoiceModelSpinner()
-                initializeAilia()
+                setupVoiceGenerateButton()
             }
             return
         }
 
-        // LLMは非同期初期化のため、このメソッドでは処理しない
+        // LLMはSend押下時にダウンロード+初期化する
         if (currentAlgorithm == AlgorithmType.LLM) {
-            if (!isInitialized) {
-                initializeAilia()
-            }
             return
         }
 
-        // MultimodalLLMはperson画像を表示してから初期化
+        // MultimodalLLMはperson画像の表示のみ(ダウンロードはSend押下時)
         if (currentAlgorithm == AlgorithmType.MULTIMODAL_LLM) {
             val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
             if (isImageMode) {
@@ -1964,10 +2315,6 @@ class MainActivity : AppCompatActivity() {
                 options.inScaled = false
                 val personBmp = BitmapFactory.decodeResource(this.resources, R.raw.person, options)
                 multimodalImageView.setImageBitmap(personBmp)
-            }
-
-            if (!isInitialized) {
-                initializeAilia()
             }
             return
         }
@@ -2077,7 +2424,7 @@ class MainActivity : AppCompatActivity() {
                     it.setAnalyzer(cameraExecutor, CameraFrameAnalyzer())
                 }
 
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            val cameraSelector = cameraChoices[selectedCameraIndex].selector
 
             try {
                 cameraProvider.unbindAll()
@@ -2123,6 +2470,17 @@ class MainActivity : AppCompatActivity() {
 
     private inner class CameraFrameAnalyzer : ImageAnalysis.Analyzer {
         override fun analyze(image: ImageProxy) {
+            // MultimodalLLMはプレビュー表示とフレーム保持のみ行う(推論はSend押下時)
+            if (currentAlgorithm == AlgorithmType.MULTIMODAL_LLM) {
+                processCameraFrame(image)
+                image.close()
+                return
+            }
+            // 画像系はRunボタンが押されるまでダウンロード・実行しない
+            if (needsVisionRunButton() && !runRequested) {
+                image.close()
+                return
+            }
             if (!isInitialized) {
                 initializeAilia()
             }
@@ -2149,7 +2507,9 @@ class MainActivity : AppCompatActivity() {
             isProcessing.set(true)
 
             try {
-                var camera_bitmap = ImageUtil().imageProxyToBitmap(image)
+                // フロントカメラはPreviewViewと同じ鏡像表示になるよう左右反転する
+                val isFrontCamera = cameraChoices[selectedCameraIndex].selector == CameraSelector.DEFAULT_FRONT_CAMERA
+                var camera_bitmap = ImageUtil().imageProxyToBitmap(image, mirror = isFrontCamera)
                 camera_bitmap = cropToSquare(camera_bitmap)
 
                 val img = ImageUtil().loadRawImage(camera_bitmap)
@@ -2165,6 +2525,10 @@ class MainActivity : AppCompatActivity() {
                 val processingTime = processAlgorithm(img, bitmap, canvas, w, h)
 
                 runOnUiThread {
+                    // Stop押下後に処理中だったフレームの結果で表示を上書きしない
+                    if (needsVisionRunButton() && !runRequested) {
+                        return@runOnUiThread
+                    }
                     if (currentAlgorithm == AlgorithmType.MULTIMODAL_LLM) {
                         latestCameraBitmap = camera_bitmap
                         multimodalImageView.setImageBitmap(camera_bitmap)
@@ -2237,6 +2601,7 @@ class MainActivity : AppCompatActivity() {
         stopMicRecording()
         releaseCurrentAlgorithm()
         cameraExecutor.shutdown()
+        speechExecutor.shutdown()
     }
 
     @Throws(IOException::class)

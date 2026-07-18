@@ -78,6 +78,9 @@ class AiliaSpeechSample {
     var currentModelType: SpeechModelType = SpeechModelType.WHISPER_TINY
     var diarizationEnabled: Boolean = false
 
+    /** 認識言語("ja"/"en"など)。"auto"の場合は自動判定(setLanguageを呼ばない) */
+    var language: String = "ja"
+
     private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): String {
         val dir = modelDir
         if (dir.isEmpty()) throw IllegalStateException("modelDir not set")
@@ -191,11 +194,22 @@ class AiliaSpeechSample {
             )
             speech?.openModel(encoderPath, decoderPath, currentModelType.modelTypeId)
 
+            // 言語設定("auto"は自動判定のためsetLanguageを呼ばない。Flutter版と同じ挙動)
+            if (language != "auto") {
+                val langResult = speech?.setLanguage(language)
+                Log.i(TAG, "setLanguage($language) result=$langResult")
+            }
+
             // Always open VAD (Silero VAD)
             val vadPath = "$dir/$VAD_FILE"
             Log.i(TAG, "Opening VAD: $vadPath")
             val vadResult = speech?.openVad(vadPath, AiliaSpeech.AILIA_SPEECH_VAD_TYPE_SILERO)
             Log.i(TAG, "VAD openVad result=$vadResult")
+
+            // VADを有効化するにはsetSilentThresholdの設定が必要
+            // (ailia-models-flutterと同じ閾値: threshold=0.5, speechSec=1.0, noSpeechSec=1.0)
+            val thresholdResult = speech?.setSilentThreshold(0.5f, 1.0f, 1.0f)
+            Log.i(TAG, "VAD setSilentThreshold result=$thresholdResult")
 
             // Open diarization if enabled
             if (diarizationEnabled) {
@@ -221,9 +235,9 @@ class AiliaSpeechSample {
 
     /**
      * Processes audio from a WAV file (non-live mode).
-     * Calls pushInputData, finalizeInputData, transcribe, and returns text.
+     * Calls pushInputData, finalizeInputData, transcribe, and returns transcript lines.
      */
-    fun process(audio: FloatArray, channels: Int, sampleRate: Int): String {
+    fun process(audio: FloatArray, channels: Int, sampleRate: Int): List<String> {
         Log.i(TAG, "Speech process: audio.size=${audio.size}, channels=$channels, sampleRate=$sampleRate, samples=${audio.size / channels}")
         val pushResult = speech?.pushInputData(audio, channels, audio.size / channels, sampleRate)
         Log.i(TAG, "Speech pushInputData result=$pushResult")
@@ -235,14 +249,15 @@ class AiliaSpeechSample {
             val errorDetail = speech?.getErrorDetail()
             Log.e(TAG, "Speech transcribe error detail: $errorDetail")
         }
-        return collectTextResults()
+        return collectTextLines()
     }
 
     /**
      * Pushes live audio data for streaming recognition (live mode).
      * Does NOT call finalizeInputData - use finalizeLiveAudio() when recording stops.
+     * Returns transcript lines confirmed by this call.
      */
-    fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int): String {
+    fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int): List<String> {
         val pushResult = speech?.pushInputData(audio, channels, audio.size / channels, sampleRate)
         Log.d(TAG, "Speech pushLiveAudio: pushInputData result=$pushResult, samples=${audio.size / channels}")
         val transcribeResult = speech?.transcribe()
@@ -251,14 +266,14 @@ class AiliaSpeechSample {
             val errorDetail = speech?.getErrorDetail()
             Log.e(TAG, "Speech pushLiveAudio transcribe error: $errorDetail")
         }
-        return collectTextResults()
+        return collectTextLines()
     }
 
     /**
-     * Finalizes live audio input and returns final transcription.
+     * Finalizes live audio input and returns the remaining transcript lines.
      * Call this when mic recording stops.
      */
-    fun finalizeLiveAudio(): String {
+    fun finalizeLiveAudio(): List<String> {
         val finalizeResult = speech?.finalizeInputData()
         Log.i(TAG, "Speech finalizeLiveAudio: finalizeInputData result=$finalizeResult")
         val transcribeResult = speech?.transcribe()
@@ -267,37 +282,44 @@ class AiliaSpeechSample {
             val errorDetail = speech?.getErrorDetail()
             Log.e(TAG, "Speech finalizeLiveAudio transcribe error: $errorDetail")
         }
-        return collectTextResults()
+        return collectTextLines()
+    }
+
+    private fun formatTimeStamp(sec: Float): String {
+        val total = sec.toInt()
+        return "%02d:%02d".format(total / 60, total % 60)
     }
 
     /**
-     * Collects text results from the speech engine.
-     * When diarization is enabled, prefixes each line with speaker ID.
+     * Collects transcript lines from the speech engine in the
+     * meeting-minutes format used by ailia-models-flutter:
+     * "[mm:ss - mm:ss] text". When diarization is enabled, each line
+     * is prefixed with the speaker ID.
      */
-    private fun collectTextResults(): String {
+    private fun collectTextLines(): List<String> {
         val count: Int? = speech?.getTextCount()
         Log.i(TAG, "Speech getTextCount=$count")
         if (count == null || count == 0) {
-            return ""
+            return emptyList()
         }
-        val sb = StringBuilder()
+        val lines = mutableListOf<String>()
         for (i in 0 until count) {
             val text: AiliaSpeechText? = speech?.getText(i)
             if (text == null) {
                 continue
             }
+            val stamp = "[${formatTimeStamp(text.timeStampBegin)} - ${formatTimeStamp(text.timeStampEnd)}]"
             if (diarizationEnabled && text.speakerId.toLong() and 0xFFFFFFFFL != AiliaSpeech.AILIA_SPEECH_SPEAKER_ID_UNKNOWN.toLong() and 0xFFFFFFFFL) {
                 Log.i(TAG, "Speech text[$i]: speaker=#${text.speakerId} '${text.text}' confidence=${text.confidence}")
-                sb.append("[Speaker ${text.speakerId}] ${text.text}\n")
+                lines.add("$stamp [Speaker ${text.speakerId}] ${text.text}")
             } else {
                 Log.i(TAG, "Speech text[$i]: '${text.text}' confidence=${text.confidence}")
-                sb.append(text.text).append("\n")
+                lines.add("$stamp ${text.text}")
             }
         }
         speech?.resetTranscribeState()
-        val result = sb.toString()
-        Log.i(TAG, "Speech result: '$result'")
-        return result
+        Log.i(TAG, "Speech result lines: $lines")
+        return lines
     }
 
     fun releaseSpeech() {

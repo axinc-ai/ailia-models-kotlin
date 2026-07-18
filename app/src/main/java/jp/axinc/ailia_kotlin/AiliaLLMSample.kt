@@ -6,6 +6,14 @@ import axip.ailia_llm.AiliaLLM
 import axip.ailia_llm.AiliaLLMChatMessage
 
 /**
+ * Available LLM models (URLs follow ailia-models-flutter: /gemma/<fileName>).
+ */
+enum class LLMModelType(val displayName: String, val fileName: String) {
+    GEMMA_4_E2B("Gemma 4 E2B", "gemma-4-E2B-it-Q4_K_M.gguf"),
+    GEMMA_2_2B("Gemma 2 2B", "gemma-2-2b-it-Q4_K_M.gguf"),
+}
+
+/**
  * Sample class demonstrating ailia LLM inference for text generation.
  */
 class AiliaLLMSample {
@@ -14,6 +22,8 @@ class AiliaLLMSample {
     private var lastResult: String = ""
     private var modelPath: String? = null
     private val conversationHistory = mutableListOf<AiliaLLMChatMessage>()
+
+    var modelType: LLMModelType = LLMModelType.GEMMA_4_E2B
 
     companion object {
         private const val TAG = "AiliaLLMSample"
@@ -27,7 +37,7 @@ class AiliaLLMSample {
     }
 
     /**
-     * Downloads and initializes the Gemma 2 LLM model.
+     * Downloads and initializes the selected LLM model ([modelType]).
      * This is a blocking operation that should be called on a background thread.
      *
      * @param context The Android context
@@ -43,8 +53,8 @@ class AiliaLLMSample {
                 release()
             }
 
-            Log.i(TAG, "Downloading Gemma 2 model...")
-            val modelFile = ModelDownloader.downloadGemma2Model(context, progressListener)
+            Log.i(TAG, "Downloading ${modelType.displayName} model (${modelType.fileName})...")
+            val modelFile = ModelDownloader.downloadLLMModel(context, modelType.fileName, progressListener)
             if (modelFile == null) {
                 Log.e(TAG, "Failed to download model")
                 return false
@@ -79,7 +89,7 @@ class AiliaLLMSample {
      * Checks if the model is already downloaded.
      */
     fun isModelDownloaded(context: Context): Boolean {
-        return ModelDownloader.isGemma2ModelDownloaded(context)
+        return ModelDownloader.isLLMModelDownloaded(context, modelType.fileName)
     }
 
     /**

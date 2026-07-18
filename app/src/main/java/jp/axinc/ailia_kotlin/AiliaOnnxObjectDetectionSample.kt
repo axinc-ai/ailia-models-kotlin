@@ -132,17 +132,27 @@ class AiliaOnnxObjectDetectionSample {
 
             for (i in 0 until count) {
                 val obj = detector!!.getObject(i)
+                // ailia-modelsと同様にカテゴリごとに色を変える
+                val catColor = CocoAndImageNetLabels.categoryColor(obj.category)
+                val boxPaint = Paint(paint).apply { color = catColor }
                 canvas.drawRect(
                     obj.x * w, obj.y * h,
                     (obj.x + obj.w) * w, (obj.y + obj.h) * h,
-                    paint
+                    boxPaint
                 )
                 val label = if (obj.category < CocoAndImageNetLabels.COCO_CATEGORY.size) {
                     CocoAndImageNetLabels.COCO_CATEGORY[obj.category]
                 } else {
                     "class${obj.category}"
                 }
-                canvas.drawText("$label ${String.format("%.2f", obj.prob)}", obj.x * w, obj.y * h, text)
+                // ラベルはカテゴリ色の背景に白文字(Python版plot_resultsと同じ)
+                val labelText = "$label ${String.format("%.2f", obj.prob)}"
+                val bgPaint = Paint().apply { style = Paint.Style.FILL; color = catColor }
+                val tx = obj.x * w
+                val ty = obj.y * h
+                canvas.drawRect(tx, ty - text.textSize, tx + text.measureText(labelText), ty + text.textSize * 0.2f, bgPaint)
+                val labelPaint = Paint(text).apply { color = android.graphics.Color.WHITE }
+                canvas.drawText(labelText, tx, ty, labelPaint)
 
                 detectionResults.add(
                     AiliaTrackerSample.DetectionResult(

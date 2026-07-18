@@ -13,6 +13,17 @@ import kotlin.math.pow
 
 class CocoAndImageNetLabels {
     companion object {
+        /**
+         * ailia-models(util/detector_utils.py)と同じカテゴリごとの色。
+         * hsv_to_rgb(256 * category / (カテゴリ数 + 1), 255, 255) 相当
+         * (OpenCVのH:0-179をAndroidの色相0-360°に変換)。
+         */
+        fun categoryColor(category: Int, categoryCount: Int = COCO_CATEGORY.size): Int {
+            val hCv = 256f * category / (categoryCount + 1)
+            val hueDeg = (hCv % 180f) * 2f
+            return android.graphics.Color.HSVToColor(floatArrayOf(hueDeg, 1f, 1f))
+        }
+
         public val IMAGENET_CATEGORY = arrayOf(
             "tench, Tinca tinca",
             "goldfish, Carassius auratus",

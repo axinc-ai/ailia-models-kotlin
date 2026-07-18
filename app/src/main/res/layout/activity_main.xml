@@ -7,85 +7,57 @@
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
-    <TextView
-        android:id="@+id/algorithmLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Select Algorithm:"
-        android:textSize="16sp"
+    <!-- コンテンツ全体を縦スクロール可能にする(Landscape対応)。
+         Processing Timeは常に画面最下部に固定する。 -->
+    <ScrollView
+        android:id="@+id/rootScrollView"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:fillViewport="true"
         app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp" />
+        app:layout_constraintEnd_toEndOf="parent">
 
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/contentLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+    <!-- アルゴリズム選択: 全体メニュー風のバー(背景色付き・画面幅いっぱい)。
+         ドロップダウンは画面中央のダイアログ表示にする -->
     <Spinner
         android:id="@+id/algorithmSpinner"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginStart="32dp"
-        android:layout_marginEnd="32dp"
-        android:layout_marginTop="8dp"
-        app:layout_constraintTop_toBottomOf="@+id/algorithmLabel"
+        android:background="@drawable/menu_bar_bg"
+        android:spinnerMode="dialog"
+        app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <TextView
-        android:id="@+id/envLabel"
-        android:layout_width="wrap_content"
+    <!-- モデル選択(モデル名表示を兼ねる)。S2T/TTS/LLMのモデルや
+         YOLOX等のTFLite/ONNX選択もここに統合する -->
+    <Spinner
+        android:id="@+id/modelSpinner"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="Select Environment:"
-        android:textSize="16sp"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginTop="4dp"
         app:layout_constraintTop_toBottomOf="@+id/algorithmSpinner"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="8dp"
-        android:visibility="gone" />
-
-    <Spinner
-        android:id="@+id/envSpinner"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="32dp"
-        android:layout_marginEnd="32dp"
-        android:layout_marginTop="4dp"
-        app:layout_constraintTop_toBottomOf="@+id/envLabel"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/runtimeLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Select Runtime:"
-        android:textSize="16sp"
-        app:layout_constraintTop_toBottomOf="@+id/envSpinner"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="8dp"
-        android:visibility="gone" />
-
-    <Spinner
-        android:id="@+id/runtimeSpinner"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="32dp"
-        android:layout_marginEnd="32dp"
-        android:layout_marginTop="4dp"
-        app:layout_constraintTop_toBottomOf="@+id/runtimeLabel"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:visibility="gone" />
+        app:layout_constraintEnd_toEndOf="parent" />
 
     <RadioGroup
         android:id="@+id/modeRadioGroup"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        app:layout_constraintTop_toBottomOf="@+id/runtimeSpinner"
+        app:layout_constraintTop_toBottomOf="@+id/modelSpinner"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp">
+        android:layout_marginTop="8dp">
 
         <RadioButton
             android:id="@+id/imageRadioButton"
@@ -103,97 +75,101 @@
 
     </RadioGroup>
 
-    <TextView
-        android:id="@+id/processingTimeTextView"
-        android:layout_width="wrap_content"
+    <Spinner
+        android:id="@+id/cameraSpinner"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="Processing Time: -- ms"
-        android:textSize="16sp"
-        android:textStyle="bold"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginTop="4dp"
         app:layout_constraintTop_toBottomOf="@+id/modeRadioGroup"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp" />
+        android:visibility="gone" />
+
+    <!-- 画像系アルゴリズム用のRunボタン(押して初めてダウンロード+実行)。
+         バックエンド選択(Environment)はRunボタンの右側に同じ高さで配置する -->
+    <Button
+        android:id="@+id/visionRunButton"
+        android:layout_width="wrap_content"
+        android:layout_height="48dp"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="4dp"
+        android:text="Run"
+        app:layout_constraintTop_toBottomOf="@+id/cameraSpinner"
+        app:layout_constraintStart_toStartOf="parent"
+        android:visibility="gone" />
+
+    <Spinner
+        android:id="@+id/envSpinner"
+        android:layout_width="0dp"
+        android:layout_height="48dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginTop="4dp"
+        app:layout_constraintTop_toTopOf="@+id/visionRunButton"
+        app:layout_constraintStart_toEndOf="@+id/visionRunButton"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:visibility="gone" />
+
+    <!-- Run/バックエンド行の下端(GONEも考慮)にコンテンツを配置するためのバリア -->
+    <androidx.constraintlayout.widget.Barrier
+        android:id="@+id/controlsBottomBarrier"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        app:barrierDirection="bottom"
+        app:constraint_referenced_ids="visionRunButton,envSpinner" />
 
     <androidx.camera.view.PreviewView
         android:id="@+id/cameraPreviewView"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:layout_marginStart="16dp"
-        android:layout_marginTop="16dp"
+        android:layout_marginTop="8dp"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="16dp"
         android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintDimensionRatio="1:1"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/processingTimeTextView" />
+        app:layout_constraintTop_toBottomOf="@+id/controlsBottomBarrier" />
 
     <ImageView
         android:id="@+id/imageView"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:layout_marginStart="16dp"
-        android:layout_marginTop="16dp"
+        android:layout_marginTop="8dp"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="16dp"
         android:background="#00FFFFFF"
         android:scaleType="fitCenter"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintDimensionRatio="1:1"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/processingTimeTextView" />
+        app:layout_constraintTop_toBottomOf="@+id/controlsBottomBarrier" />
 
     <ScrollView
         android:id="@+id/resultScrollView"
         android:layout_width="0dp"
-        android:layout_height="0dp"
+        android:layout_height="wrap_content"
         android:layout_marginStart="16dp"
-        android:layout_marginTop="16dp"
+        android:layout_marginTop="8dp"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="16dp"
         android:background="?android:attr/colorBackground"
-        android:fillViewport="true"
         android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/processingTimeTextView">
+        app:layout_constraintTop_toBottomOf="@+id/controlsBottomBarrier">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:padding="16dp">
-
-            <TextView
-                android:id="@+id/classificationResultTextView"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="16dp"
-                android:text="Classification Result: --"
-                android:textColor="?android:attr/textColorPrimary"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/speechModelLabel"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:text="Speech Model:"
-                android:textColor="?android:attr/textColorPrimary"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
-
-            <Spinner
-                android:id="@+id/speechModelSpinner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:visibility="gone" />
 
             <RadioGroup
                 android:id="@+id/speechModeRadioGroup"
@@ -219,12 +195,40 @@
 
             </RadioGroup>
 
+            <!-- 言語選択はMicモード時のみ表示(Wavモードはauto固定) -->
+            <TextView
+                android:id="@+id/speechLanguageLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="Language:"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <Spinner
+                android:id="@+id/speechLanguageSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:visibility="gone" />
+
             <CheckBox
                 android:id="@+id/diarizationCheckBox"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
                 android:text="Speaker Diarization (pyannote-audio)"
+                android:textColor="?android:attr/textColorPrimary"
+                android:visibility="gone" />
+
+            <CheckBox
+                android:id="@+id/liveModeCheckBox"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="Live Mode (intermediate results)"
                 android:textColor="?android:attr/textColorPrimary"
                 android:visibility="gone" />
 
@@ -244,24 +248,46 @@
                 android:text="Record"
                 android:visibility="gone" />
 
-            <ImageView
-                android:id="@+id/waveformImageView"
-                android:layout_width="match_parent"
-                android:layout_height="120dp"
-                android:layout_marginBottom="8dp"
-                android:background="#FF1A1A2E"
-                android:scaleType="fitXY"
-                android:visibility="gone" />
-
             <TextView
                 android:id="@+id/waveformInfoTextView"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:gravity="center"
+                android:text=""
+                android:textColor="#FFFF4444"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
+            <jp.axinc.ailia_kotlin.WaveformView
+                android:id="@+id/waveformView"
+                android:layout_width="match_parent"
+                android:layout_height="100dp"
                 android:layout_marginBottom="8dp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/classificationResultTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="Classification Result: --"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/transcriptTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:background="@drawable/panel_border"
+                android:padding="8dp"
                 android:fontFamily="monospace"
                 android:text=""
-                android:textColor="?android:attr/textColorSecondary"
-                android:textSize="12sp"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="13sp"
                 android:visibility="gone" />
 
             <TextView
@@ -328,22 +354,16 @@
                 android:scaleType="fitCenter"
                 android:visibility="gone" />
 
-            <TextView
-                android:id="@+id/voiceModelLabel"
+            <EditText
+                android:id="@+id/voiceInputEditText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
-                android:text="Voice Model:"
+                android:hint="Text to speak..."
+                android:maxLines="3"
+                android:minLines="1"
                 android:textColor="?android:attr/textColorPrimary"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
-
-            <Spinner
-                android:id="@+id/voiceModelSpinner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
+                android:textColorHint="?android:attr/textColorSecondary"
                 android:visibility="gone" />
 
             <TextView
@@ -356,23 +376,62 @@
                 android:textSize="14sp"
                 android:visibility="gone" />
 
-            <Button
-                android:id="@+id/voiceGenerateButton"
-                android:layout_width="wrap_content"
+            <!-- Generateボタンとバックエンド選択を同じ高さで横並びにする -->
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="end"
                 android:layout_marginBottom="8dp"
-                android:text="Generate"
-                android:visibility="gone" />
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/voiceGenerateButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="Generate"
+                    android:visibility="gone" />
+
+                <Spinner
+                    android:id="@+id/voiceEnvSpinner"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="16dp"
+                    android:layout_weight="1"
+                    android:visibility="gone" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/voiceResultTextView"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="16dp"
+                android:layout_marginBottom="8dp"
                 android:text=""
                 android:textColor="?android:attr/textColorPrimary"
                 android:textSize="14sp"
+                android:visibility="gone" />
+
+            <jp.axinc.ailia_kotlin.WaveformView
+                android:id="@+id/voiceWaveformView"
+                android:layout_width="match_parent"
+                android:layout_height="100dp"
+                android:layout_marginBottom="4dp"
+                android:visibility="gone" />
+
+            <!-- 生成後に表示される小さなリプレイボタン -->
+            <Button
+                android:id="@+id/voiceReplayButton"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:textSize="12sp"
+                android:layout_marginBottom="16dp"
+                android:text="Replay"
                 android:visibility="gone" />
 
             <TextView
@@ -423,24 +482,45 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
-                android:text="Response:"
+                android:text="Chat:"
                 android:textColor="?android:attr/textColorPrimary"
                 android:textSize="16sp"
                 android:textStyle="bold"
                 android:visibility="gone" />
 
-            <TextView
-                android:id="@+id/llmOutputTextView"
+            <LinearLayout
+                android:id="@+id/llmChatContainer"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="16dp"
-                android:fontFamily="monospace"
-                android:text=""
-                android:textColor="?android:attr/textColorPrimary"
-                android:textSize="14sp"
+                android:orientation="vertical"
                 android:visibility="gone" />
 
         </LinearLayout>
+    </ScrollView>
+
+    <!-- コンテンツ(画像/結果)の下端にProcessing Timeを配置するためのバリア -->
+    <androidx.constraintlayout.widget.Barrier
+        android:id="@+id/contentBottomBarrier"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        app:barrierDirection="bottom"
+        app:constraint_referenced_ids="cameraPreviewView,imageView,resultScrollView" />
+
+    <TextView
+        android:id="@+id/processingTimeTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="8dp"
+        android:text="Processing Time: -- ms"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        app:layout_constraintTop_toBottomOf="@+id/contentBottomBarrier"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
     </ScrollView>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

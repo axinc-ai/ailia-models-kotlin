@@ -19,6 +19,20 @@ object ModelDownloader {
     const val GEMMA_3_MODEL_URL = "$BASE_URL/gemma/gemma-3-4b-it-Q4_K_M.gguf"
     const val GEMMA_3_MMPROJ_URL = "$BASE_URL/gemma/gemma-3-4b-it-GGUF_mmproj-model-f16.gguf"
 
+    /**
+     * Downloads an LLM model file from the gemma directory by file name.
+     */
+    fun downloadLLMModel(context: Context, fileName: String, listener: DownloadListener? = null): File? {
+        return downloadFile(context, "$BASE_URL/gemma/$fileName", fileName, listener)
+    }
+
+    /**
+     * Checks if the given LLM model file is already downloaded.
+     */
+    fun isLLMModelDownloaded(context: Context, fileName: String): Boolean {
+        return File(context.cacheDir, fileName).exists()
+    }
+
     // Sample image for multimodal demo
     const val SAMPLE_IMAGE_URL = "$BASE_URL/misc/sample_image.jpg"
 
