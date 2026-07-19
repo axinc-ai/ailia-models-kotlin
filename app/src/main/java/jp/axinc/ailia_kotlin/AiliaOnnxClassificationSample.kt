@@ -46,19 +46,13 @@ class AiliaOnnxClassificationSample {
 
     var modelType: OnnxClassificationModelType = OnnxClassificationModelType.MOBILENETV2
 
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
-
     private var ailia: AiliaModel? = null
     private var classifier: AiliaClassifierModel? = null
     private var isInitialized = false
     private var lastClassificationResult: String = ""
     var modelDir: String = ""
 
-    private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): Boolean {
+    private fun downloadFile(urlStr: String, fileName: String, listener: ModelDownloadListener? = null): Boolean {
         val dir = modelDir
         val path = "$dir/$fileName"
         val file = File(path)
@@ -95,7 +89,7 @@ class AiliaOnnxClassificationSample {
         return true
     }
 
-    fun downloadModel(listener: DownloadListener? = null): Boolean {
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
         try {
             Log.i(TAG, "Starting ONNX classification model download/check (${modelType.displayName})...")
             downloadFile(modelType.protoUrl, modelType.protoFile, listener)

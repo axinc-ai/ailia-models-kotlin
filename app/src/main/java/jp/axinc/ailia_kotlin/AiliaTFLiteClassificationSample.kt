@@ -34,17 +34,11 @@ class AiliaTFLiteClassificationSample {
         private const val TAG = "AILIA_Main"
     }
 
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
-
     var modelType: TFLiteClassificationModelType = TFLiteClassificationModelType.MOBILENETV2
     var modelDir: String = ""
 
     /** modelUrlを持つモデル(ResNet50)をmodelDirへダウンロードする */
-    fun downloadModel(listener: DownloadListener? = null): Boolean {
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
         val url = modelType.modelUrl ?: return true
         val fileName = modelType.modelFile!!
         val path = "$modelDir/$fileName"

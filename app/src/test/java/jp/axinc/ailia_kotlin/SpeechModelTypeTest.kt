@@ -42,16 +42,31 @@ class SpeechModelTypeTest {
     }
 
     @Test
+    fun speechSample_defaultsToSenseVoice() {
+        assertEquals(
+            SpeechModelType.SENSEVOICE_SMALL,
+            AiliaSpeechSample().currentModelType
+        )
+    }
+
+    @Test
     fun encoderFileNames_areUnique() {
         val fileNames = SpeechModelType.values().map { it.encoderFileName }
         assertEquals("Encoder file names should be unique", fileNames.size, fileNames.distinct().size)
     }
 
     @Test
-    fun sensevoice_doesNotNeedDecoder() {
-        assertFalse("SenseVoice should not need decoder", SpeechModelType.SENSEVOICE_SMALL.needsDecoder)
-        assertTrue("SenseVoice decoder URL should be empty", SpeechModelType.SENSEVOICE_SMALL.decoderUrl.isEmpty())
-        assertTrue("SenseVoice decoder filename should be empty", SpeechModelType.SENSEVOICE_SMALL.decoderFileName.isEmpty())
+    fun sensevoice_usesAuxiliaryModelFile() {
+        val senseVoice = SpeechModelType.SENSEVOICE_SMALL
+        assertTrue("SenseVoice should use its auxiliary model", senseVoice.needsDecoder)
+        assertTrue(
+            "SenseVoice auxiliary URL should end with .model",
+            senseVoice.decoderUrl.endsWith(".model")
+        )
+        assertTrue(
+            "SenseVoice auxiliary filename should end with .model",
+            senseVoice.decoderFileName.endsWith(".model")
+        )
     }
 
     @Test
@@ -127,12 +142,13 @@ class SpeechModelTypeTest {
     }
 
     @Test
-    fun decoderFileNames_endWithOnnx_orEmpty() {
+    fun secondaryModelFileNames_haveSupportedExtension() {
         for (model in SpeechModelType.values()) {
             if (model.needsDecoder) {
                 assertTrue(
-                    "${model.name} decoder filename should end with .onnx",
-                    model.decoderFileName.endsWith(".onnx")
+                    "${model.name} secondary model filename should end with .onnx or .model",
+                    model.decoderFileName.endsWith(".onnx") ||
+                        model.decoderFileName.endsWith(".model")
                 )
             }
         }

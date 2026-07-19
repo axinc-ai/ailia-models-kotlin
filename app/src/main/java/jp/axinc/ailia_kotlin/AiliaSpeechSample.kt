@@ -1,10 +1,17 @@
 package jp.axinc.ailia_kotlin
 
+import android.annotation.SuppressLint
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 import axip.ailia_speech.AiliaSpeech
 import axip.ailia_speech.AiliaSpeechText
@@ -56,9 +63,10 @@ enum class SpeechModelType(
 }
 
 class AiliaSpeechSample {
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
+    /** マイク録音中にUIへ返すデータだけを定義する。各コールバックはバックグラウンドスレッドで呼ばれる。 */
+    interface MicRecordingListener {
+        fun onWaveform(samples: FloatArray, sampleRate: Int)
+        fun onResult(lines: List<String>, isFinal: Boolean)
         fun onError(error: String)
     }
 
@@ -73,15 +81,25 @@ class AiliaSpeechSample {
     }
 
     private var speech: AiliaSpeech? = null
+    @Volatile
     private var isInitialized = false
+    private var audioRecord: AudioRecord? = null
+    private var micReadExecutor: ExecutorService? = null
+    private var micRecognitionExecutor: ExecutorService? = null
+    private val micRecording = AtomicBoolean(false)
+    private val micSessionActive = AtomicBoolean(false)
+    private val finalizeMicInput = AtomicBoolean(true)
     var modelDir: String = ""
-    var currentModelType: SpeechModelType = SpeechModelType.WHISPER_TINY
+    var currentModelType: SpeechModelType = SpeechModelType.SENSEVOICE_SMALL
     var diarizationEnabled: Boolean = false
+
+    val isMicRecording: Boolean
+        get() = micRecording.get()
 
     /** 認識言語("ja"/"en"など)。"auto"の場合は自動判定(setLanguageを呼ばない) */
     var language: String = "ja"
 
-    private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): String {
+    private fun downloadFile(urlStr: String, fileName: String, listener: ModelDownloadListener? = null): String {
         val dir = modelDir
         if (dir.isEmpty()) throw IllegalStateException("modelDir not set")
         val path = "$dir/$fileName"
@@ -124,7 +142,7 @@ class AiliaSpeechSample {
      * Always downloads Silero VAD model for all modes.
      * If diarizationEnabled is true, also downloads pyannote-audio segmentation and embedding models.
      */
-    fun downloadModel(modelType: SpeechModelType = currentModelType, listener: DownloadListener? = null): Boolean {
+    fun downloadModel(modelType: SpeechModelType = currentModelType, listener: ModelDownloadListener? = null): Boolean {
         currentModelType = modelType
         return try {
             Log.i(TAG, "Starting speech model download/check for ${modelType.displayName}...")
@@ -285,6 +303,248 @@ class AiliaSpeechSample {
         return collectTextLines()
     }
 
+    /**
+     * 16kHz/mono/PCM_FLOATでマイク録音を開始する。
+     * 波形用には100msごと、音声認識には1秒ごとにデータを通知・投入する。
+     */
+    @SuppressLint("MissingPermission")
+    fun startMicRecording(listener: MicRecordingListener): Boolean {
+        if (!isInitialized) {
+            listener.onError("Speech model not ready")
+            return false
+        }
+        if (!micSessionActive.compareAndSet(false, true)) {
+            listener.onError("Previous microphone session is still finalizing")
+            return false
+        }
+
+        val sampleRate = 16000
+        val readChunkSize = sampleRate / 10
+        val recognitionChunkSize = sampleRate
+        val audioRecordBufferBytes = recognitionChunkSize * Float.SIZE_BYTES * 2
+
+        return try {
+            val recorder = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_FLOAT,
+                audioRecordBufferBytes
+            )
+            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                recorder.release()
+                micSessionActive.set(false)
+                listener.onError("Failed to initialize AudioRecord")
+                return false
+            }
+
+            synchronized(this) {
+                audioRecord = recorder
+            }
+            finalizeMicInput.set(true)
+            micRecognitionExecutor = newMicExecutor("ailia-speech-recognition", android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            micReadExecutor = newMicExecutor("ailia-speech-recording", android.os.Process.THREAD_PRIORITY_AUDIO)
+            recorder.startRecording()
+            micRecording.set(true)
+            micReadExecutor?.execute {
+                runMicRecordingLoop(
+                    recorder,
+                    listener,
+                    sampleRate,
+                    readChunkSize,
+                    recognitionChunkSize
+                )
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start microphone recording", e)
+            releaseAudioRecord()
+            shutdownMicExecutors()
+            micSessionActive.set(false)
+            listener.onError(e.message ?: "Failed to start microphone recording")
+            false
+        }
+    }
+
+    private fun newMicExecutor(name: String, priority: Int): ExecutorService {
+        return Executors.newSingleThreadExecutor { runnable ->
+            Thread({
+                android.os.Process.setThreadPriority(priority)
+                runnable.run()
+            }, name)
+        }
+    }
+
+    private fun runMicRecordingLoop(
+        recorder: AudioRecord,
+        listener: MicRecordingListener,
+        sampleRate: Int,
+        readChunkSize: Int,
+        recognitionChunkSize: Int
+    ) {
+        val readBuffer = FloatArray(readChunkSize)
+        val recognitionBuffer = FloatArray(recognitionChunkSize)
+        var recognitionFill = 0
+
+        try {
+            while (micRecording.get()) {
+                val readResult = recorder.read(
+                    readBuffer,
+                    0,
+                    readBuffer.size,
+                    AudioRecord.READ_BLOCKING
+                )
+                if (readResult < 0) {
+                    micRecording.set(false)
+                    listener.onError("AudioRecord read failed: $readResult")
+                    break
+                }
+                if (readResult == 0) {
+                    continue
+                }
+
+                listener.onWaveform(readBuffer.copyOf(readResult), sampleRate)
+
+                var sourceOffset = 0
+                while (sourceOffset < readResult) {
+                    val copySize = minOf(
+                        readResult - sourceOffset,
+                        recognitionChunkSize - recognitionFill
+                    )
+                    System.arraycopy(
+                        readBuffer,
+                        sourceOffset,
+                        recognitionBuffer,
+                        recognitionFill,
+                        copySize
+                    )
+                    sourceOffset += copySize
+                    recognitionFill += copySize
+
+                    if (recognitionFill == recognitionChunkSize) {
+                        submitMicChunk(recognitionBuffer.copyOf(), listener, sampleRate)
+                        recognitionFill = 0
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            if (micRecording.get()) {
+                Log.e(TAG, "Microphone recording loop failed", e)
+                listener.onError(e.message ?: "Microphone recording failed")
+            }
+        } finally {
+            micRecording.set(false)
+            releaseAudioRecord(recorder)
+            micReadExecutor?.shutdown()
+            micReadExecutor = null
+
+            if (finalizeMicInput.get()) {
+                submitMicFinalization(
+                    recognitionBuffer.copyOf(recognitionFill),
+                    listener,
+                    sampleRate
+                )
+            } else {
+                micRecognitionExecutor?.shutdownNow()
+                micRecognitionExecutor = null
+                micSessionActive.set(false)
+            }
+        }
+    }
+
+    private fun submitMicChunk(
+        chunk: FloatArray,
+        listener: MicRecordingListener,
+        sampleRate: Int
+    ) {
+        micRecognitionExecutor?.execute {
+            if (!isInitialized) return@execute
+            try {
+                val lines = pushLiveAudio(chunk, 1, sampleRate)
+                if (lines.isNotEmpty()) {
+                    listener.onResult(lines, false)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "pushLiveAudio failed", e)
+                listener.onError(e.message ?: "Live speech recognition failed")
+            }
+        }
+    }
+
+    private fun submitMicFinalization(
+        tail: FloatArray,
+        listener: MicRecordingListener,
+        sampleRate: Int
+    ) {
+        val executor = micRecognitionExecutor
+        if (executor == null) {
+            micSessionActive.set(false)
+            return
+        }
+        executor.execute {
+            try {
+                if (isInitialized && tail.isNotEmpty()) {
+                    val lines = pushLiveAudio(tail, 1, sampleRate)
+                    if (lines.isNotEmpty()) {
+                        listener.onResult(lines, false)
+                    }
+                }
+                val finalLines = if (isInitialized) finalizeLiveAudio() else emptyList()
+                listener.onResult(finalLines, true)
+            } catch (e: Exception) {
+                Log.e(TAG, "finalizeLiveAudio failed", e)
+                listener.onError(e.message ?: "Failed to finalize live speech recognition")
+            } finally {
+                micSessionActive.set(false)
+                synchronized(this) {
+                    if (micRecognitionExecutor === executor) {
+                        micRecognitionExecutor = null
+                    }
+                }
+            }
+        }
+        executor.shutdown()
+    }
+
+    /** 録音を停止する。通常停止時は1秒未満の末尾も投入して認識を確定する。 */
+    fun stopMicRecording(finalize: Boolean = true) {
+        if (!micSessionActive.get()) return
+        finalizeMicInput.set(finalize)
+        micRecording.set(false)
+        releaseAudioRecord()
+    }
+
+    private fun releaseAudioRecord(expected: AudioRecord? = null) {
+        val recorder = synchronized(this) {
+            if (expected != null && audioRecord !== expected) {
+                null
+            } else {
+                val current = audioRecord
+                audioRecord = null
+                current
+            }
+        } ?: return
+        try {
+            if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                recorder.stop()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop AudioRecord: ${e.message}")
+        }
+        try {
+            recorder.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release AudioRecord: ${e.message}")
+        }
+    }
+
+    private fun shutdownMicExecutors() {
+        micReadExecutor?.shutdownNow()
+        micReadExecutor = null
+        micRecognitionExecutor?.shutdownNow()
+        micRecognitionExecutor = null
+    }
+
     private fun formatTimeStamp(sec: Float): String {
         val total = sec.toInt()
         return "%02d:%02d".format(total / 60, total % 60)
@@ -323,6 +583,10 @@ class AiliaSpeechSample {
     }
 
     fun releaseSpeech() {
+        isInitialized = false
+        stopMicRecording(finalize = false)
+        shutdownMicExecutors()
+        micSessionActive.set(false)
         try {
             speech?.close()
         } catch (e: Exception) {

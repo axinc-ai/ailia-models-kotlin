@@ -19,12 +19,6 @@ import java.net.URL
  */
 class AiliaMiniLMv2Sample {
 
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
-
     companion object {
         private const val TAG = "AILIA_Main"
         private const val MODEL_URL = "https://storage.googleapis.com/ailia-models/multilingual-minilmv2/minilm_l12.onnx"
@@ -48,7 +42,7 @@ class AiliaMiniLMv2Sample {
     private var isInitialized = false
     private var lastResult: String = ""
 
-    private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): Boolean {
+    private fun downloadFile(urlStr: String, fileName: String, listener: ModelDownloadListener? = null): Boolean {
         val dir = modelDir
         val path = "$dir/$fileName"
         val file = File(path)
@@ -88,7 +82,7 @@ class AiliaMiniLMv2Sample {
     /**
      * Downloads all required model files (ONNX model, prototxt, sentencepiece tokenizer).
      */
-    fun downloadModel(listener: DownloadListener? = null): Boolean {
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
         return try {
             Log.i(TAG, "Starting MiniLMv2 model download/check...")
             downloadFile(PROTO_URL, PROTO_FILE, listener)

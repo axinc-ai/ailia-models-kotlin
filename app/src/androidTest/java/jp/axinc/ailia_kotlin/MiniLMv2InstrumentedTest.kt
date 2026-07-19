@@ -38,7 +38,7 @@ class MiniLMv2InstrumentedTest {
     fun testDownloadModel() {
         Log.i(TAG, "=== Testing MiniLMv2 model download ===")
 
-        val downloaded = miniLMv2Sample.downloadModel(object : AiliaMiniLMv2Sample.DownloadListener {
+        val downloaded = miniLMv2Sample.downloadModel(object : ModelDownloadListener {
             override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                 val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
                 Log.i(TAG, "Downloading $fileName: $percent%")

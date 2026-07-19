@@ -52,17 +52,11 @@ class AiliaDetrSample {
         )
     }
 
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
-
     private var ailia: AiliaModel? = null
     private var isInitialized = false
     var modelDir: String = ""
 
-    private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): Boolean {
+    private fun downloadFile(urlStr: String, fileName: String, listener: ModelDownloadListener? = null): Boolean {
         val path = "$modelDir/$fileName"
         val file = File(path)
         if (file.exists() && file.canRead()) {
@@ -92,7 +86,7 @@ class AiliaDetrSample {
         return true
     }
 
-    fun downloadModel(listener: DownloadListener? = null): Boolean {
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
         return try {
             Log.i(TAG, "Starting DETR model download/check...")
             downloadFile(PROTO_URL, PROTO_FILE, listener)

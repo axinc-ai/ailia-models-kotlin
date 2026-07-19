@@ -8,9 +8,6 @@ import android.graphics.BitmapFactory.Options
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.os.Bundle
 import android.util.Log
 import android.view.View
@@ -42,7 +39,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var processingTimeTextView: TextView
     private lateinit var resultScrollView: ScrollView
     private lateinit var classificationResultTextView: TextView
+    private lateinit var tokenizerInputLabel: TextView
     private lateinit var tokenizerInputEditText: EditText
+    private lateinit var tokenizerOutputLabel: TextView
     private lateinit var tokenizerOutputTextView: TextView
     private lateinit var trackingResultTextView: TextView
     private lateinit var voiceInputEditText: EditText
@@ -128,18 +127,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var speechExecutor: ExecutorService
 
     private var selectedVoiceModelType: VoiceModelType = VoiceModelType.GPT_SOVITS_V1
-    private var selectedSpeechModelType: SpeechModelType = SpeechModelType.WHISPER_TINY
+    private var selectedSpeechModelType: SpeechModelType = SpeechModelType.SENSEVOICE_SMALL
     private var selectedSpeechLanguage: String = "ja"
     private var selectedLLMModelType: LLMModelType = LLMModelType.GEMMA_4_E2B
-    private var audioRecord: AudioRecord? = null
-    private var isRecording = AtomicBoolean(false)
 
     // マイク録音のREC経過時間表示用
     private val recTimerHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var recStartMs: Long = 0
     private val recTimerRunnable = object : Runnable {
         override fun run() {
-            if (isRecording.get()) {
+            if (speechSample.isMicRecording) {
                 val elapsedSec = (android.os.SystemClock.elapsedRealtime() - recStartMs) / 1000
                 waveformInfoTextView.text = "● REC %02d:%02d".format(elapsedSec / 60, elapsedSec % 60)
                 recTimerHandler.postDelayed(this, 500)
@@ -231,7 +228,9 @@ class MainActivity : AppCompatActivity() {
         processingTimeTextView = findViewById(R.id.processingTimeTextView)
         resultScrollView = findViewById(R.id.resultScrollView)
         classificationResultTextView = findViewById(R.id.classificationResultTextView)
+        tokenizerInputLabel = findViewById(R.id.tokenizerInputLabel)
         tokenizerInputEditText = findViewById(R.id.tokenizerInputEditText)
+        tokenizerOutputLabel = findViewById(R.id.tokenizerOutputLabel)
         tokenizerOutputTextView = findViewById(R.id.tokenizerOutputTextView)
         trackingResultTextView = findViewById(R.id.trackingResultTextView)
         voiceInputEditText = findViewById(R.id.voiceInputEditText)
@@ -669,7 +668,7 @@ class MainActivity : AppCompatActivity() {
                 val newType = SpeechModelType.values()[position]
                 if (newType != selectedSpeechModelType) {
                     selectedSpeechModelType = newType
-                    stopMicRecording()
+                    stopMicRecording(finalize = false)
                     // モデルダウンロードはRun/Record押下時まで遅延する
                     speechSample.releaseSpeech()
                     isInitialized = false
@@ -833,253 +832,145 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** updateUIVisibilityで管理するView。可視性の初期値はすべてGONEにする。 */
+    private fun managedAlgorithmViews(): List<View> = listOf(
+        modeRadioGroup,
+        imageView,
+        cameraPreviewView,
+        resultScrollView,
+        classificationResultTextView,
+        tokenizerInputLabel,
+        tokenizerInputEditText,
+        tokenizerOutputLabel,
+        tokenizerOutputTextView,
+        trackingResultTextView,
+        transcriptTextView,
+        multimodalImageView,
+        llmInputLabel,
+        llmInputEditText,
+        llmSendButton,
+        llmOutputLabel,
+        llmChatContainer,
+        llmStatusTextView,
+        voiceInputEditText,
+        voiceStatusTextView,
+        voiceGenerateButton,
+        voiceEnvSpinner,
+        voiceResultTextView,
+        speechLanguageLabel,
+        speechLanguageSpinner,
+        speechModeRadioGroup,
+        diarizationCheckBox,
+        liveModeCheckBox,
+        speechRunButton,
+        micRecordButton,
+        waveformView,
+        waveformInfoTextView,
+        voiceWaveformView,
+        voiceReplayButton,
+    )
+
+    /** アルゴリズムごとに表示するView集合。共通レイアウトは同じ集合を共有する。 */
+    private fun visibleViewsByAlgorithm(isCameraMode: Boolean): Map<AlgorithmType, Set<View>> {
+        val visionViews = mutableSetOf<View>(modeRadioGroup, imageView)
+        if (isCameraMode) {
+            visionViews.add(cameraPreviewView)
+        }
+
+        val tokenizeViews = setOf<View>(
+            resultScrollView,
+            tokenizerInputLabel,
+            tokenizerInputEditText,
+            tokenizerOutputLabel,
+            tokenizerOutputTextView,
+        )
+
+        val isMicMode = speechModeRadioGroup.checkedRadioButtonId == R.id.micRadioButton
+        val speechViews = mutableSetOf<View>(
+            resultScrollView,
+            classificationResultTextView,
+            transcriptTextView,
+            speechModeRadioGroup,
+            diarizationCheckBox,
+        )
+        if (isMicMode) {
+            speechViews.addAll(
+                listOf(
+                    speechLanguageLabel,
+                    speechLanguageSpinner,
+                    liveModeCheckBox,
+                    micRecordButton,
+                    waveformView,
+                    waveformInfoTextView,
+                )
+            )
+        } else {
+            speechViews.add(speechRunButton)
+        }
+
+        val llmViews = setOf<View>(
+            resultScrollView,
+            llmInputLabel,
+            llmInputEditText,
+            llmSendButton,
+            llmOutputLabel,
+            llmChatContainer,
+            llmStatusTextView,
+        )
+
+        val multimodalViews = llmViews.toMutableSet().apply {
+            add(modeRadioGroup)
+            add(multimodalImageView)
+            if (isCameraMode) {
+                add(cameraPreviewView)
+            }
+        }
+
+        val voiceViews = setOf<View>(
+            resultScrollView,
+            voiceInputEditText,
+            voiceStatusTextView,
+            voiceGenerateButton,
+            voiceEnvSpinner,
+            voiceResultTextView,
+            voiceWaveformView,
+        )
+
+        return mapOf(
+            AlgorithmType.POSE_ESTIMATION to visionViews,
+            AlgorithmType.OBJECT_DETECTION to visionViews,
+            AlgorithmType.TRACKING to visionViews,
+            AlgorithmType.TOKENIZE to tokenizeViews,
+            AlgorithmType.CLASSIFICATION to visionViews,
+            AlgorithmType.BACKGROUND_REMOVAL to visionViews,
+            AlgorithmType.SPEECH_TO_TEXT to speechViews,
+            AlgorithmType.TEXT_TO_SPEECH to voiceViews,
+            AlgorithmType.LLM to llmViews,
+            AlgorithmType.MULTIMODAL_LLM to multimodalViews,
+        )
+    }
+
     private fun updateUIVisibility() {
-        val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
         val isCameraMode = modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton
+        val visibleViews = visibleViewsByAlgorithm(isCameraMode).getValue(currentAlgorithm)
+        managedAlgorithmViews().forEach { view ->
+            view.visibility = if (view in visibleViews) View.VISIBLE else View.GONE
+        }
 
+        // 表示切り替え時に必要なアルゴリズム固有の初期状態を設定する。
         when (currentAlgorithm) {
-            AlgorithmType.TOKENIZE -> {
-                modeRadioGroup.visibility = View.GONE
-                imageView.visibility = View.GONE
-                cameraPreviewView.visibility = View.GONE
-                resultScrollView.visibility = View.VISIBLE
-                classificationResultTextView.visibility = View.GONE
-                tokenizerInputEditText.visibility = View.VISIBLE
-                tokenizerOutputTextView.visibility = View.VISIBLE
-                trackingResultTextView.visibility = View.GONE
-                transcriptTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.VISIBLE
-                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.VISIBLE
-                multimodalImageView.visibility = View.GONE
-                llmInputLabel.visibility = View.GONE
-                llmInputEditText.visibility = View.GONE
-                llmSendButton.visibility = View.GONE
-                llmOutputLabel.visibility = View.GONE
-                llmChatContainer.visibility = View.GONE
-                llmStatusTextView.visibility = View.GONE
-                voiceInputEditText.visibility = View.GONE
-                voiceStatusTextView.visibility = View.GONE
-                voiceGenerateButton.visibility = View.GONE
-                voiceEnvSpinner.visibility = View.GONE
-                voiceResultTextView.visibility = View.GONE
-                speechLanguageLabel.visibility = View.GONE
-                speechLanguageSpinner.visibility = View.GONE
-                speechModeRadioGroup.visibility = View.GONE
-                diarizationCheckBox.visibility = View.GONE
-                liveModeCheckBox.visibility = View.GONE
-                speechRunButton.visibility = View.GONE
-                micRecordButton.visibility = View.GONE
-                waveformView.visibility = View.GONE
-                waveformInfoTextView.visibility = View.GONE
-                voiceWaveformView.visibility = View.GONE
-                voiceReplayButton.visibility = View.GONE
-            }
-
-            AlgorithmType.CLASSIFICATION -> {
-                modeRadioGroup.visibility = View.VISIBLE
-                if (isImageMode) {
-                    imageView.visibility = View.VISIBLE
-                    cameraPreviewView.visibility = View.GONE
-                } else {
-                    imageView.visibility = View.VISIBLE
-                    cameraPreviewView.visibility = View.VISIBLE
-                }
-                resultScrollView.visibility = View.GONE
-                classificationResultTextView.visibility = View.GONE
-                tokenizerInputEditText.visibility = View.GONE
-                tokenizerOutputTextView.visibility = View.GONE
-                trackingResultTextView.visibility = View.GONE
-                transcriptTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
-                multimodalImageView.visibility = View.GONE
-                llmInputLabel.visibility = View.GONE
-                llmInputEditText.visibility = View.GONE
-                llmSendButton.visibility = View.GONE
-                llmOutputLabel.visibility = View.GONE
-                llmChatContainer.visibility = View.GONE
-                llmStatusTextView.visibility = View.GONE
-                voiceInputEditText.visibility = View.GONE
-                voiceStatusTextView.visibility = View.GONE
-                voiceGenerateButton.visibility = View.GONE
-                voiceEnvSpinner.visibility = View.GONE
-                voiceResultTextView.visibility = View.GONE
-                speechLanguageLabel.visibility = View.GONE
-                speechLanguageSpinner.visibility = View.GONE
-                speechModeRadioGroup.visibility = View.GONE
-                diarizationCheckBox.visibility = View.GONE
-                liveModeCheckBox.visibility = View.GONE
-                speechRunButton.visibility = View.GONE
-                micRecordButton.visibility = View.GONE
-                waveformView.visibility = View.GONE
-                waveformInfoTextView.visibility = View.GONE
-                voiceWaveformView.visibility = View.GONE
-                voiceReplayButton.visibility = View.GONE
-            }
-
-            AlgorithmType.TRACKING -> {
-                modeRadioGroup.visibility = View.VISIBLE
-                if (isImageMode) {
-                    imageView.visibility = View.VISIBLE
-                    cameraPreviewView.visibility = View.GONE
-                } else {
-                    imageView.visibility = View.VISIBLE
-                    cameraPreviewView.visibility = View.VISIBLE
-                }
-                resultScrollView.visibility = View.GONE
-                classificationResultTextView.visibility = View.GONE
-                tokenizerInputEditText.visibility = View.GONE
-                tokenizerOutputTextView.visibility = View.GONE
-                trackingResultTextView.visibility = View.GONE
-                transcriptTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
-                multimodalImageView.visibility = View.GONE
-                llmInputLabel.visibility = View.GONE
-                llmInputEditText.visibility = View.GONE
-                llmSendButton.visibility = View.GONE
-                llmOutputLabel.visibility = View.GONE
-                llmChatContainer.visibility = View.GONE
-                llmStatusTextView.visibility = View.GONE
-                voiceInputEditText.visibility = View.GONE
-                voiceStatusTextView.visibility = View.GONE
-                voiceGenerateButton.visibility = View.GONE
-                voiceEnvSpinner.visibility = View.GONE
-                voiceResultTextView.visibility = View.GONE
-                speechLanguageLabel.visibility = View.GONE
-                speechLanguageSpinner.visibility = View.GONE
-                speechModeRadioGroup.visibility = View.GONE
-                diarizationCheckBox.visibility = View.GONE
-                liveModeCheckBox.visibility = View.GONE
-                speechRunButton.visibility = View.GONE
-                micRecordButton.visibility = View.GONE
-                waveformView.visibility = View.GONE
-                waveformInfoTextView.visibility = View.GONE
-                voiceWaveformView.visibility = View.GONE
-                voiceReplayButton.visibility = View.GONE
-            }
-
             AlgorithmType.SPEECH_TO_TEXT -> {
-                val isMicMode = speechModeRadioGroup.checkedRadioButtonId == R.id.micRadioButton
-                modeRadioGroup.visibility = View.GONE
-                imageView.visibility = View.GONE
-                cameraPreviewView.visibility = View.GONE
-                resultScrollView.visibility = View.VISIBLE
-                classificationResultTextView.visibility = View.VISIBLE
                 classificationResultTextView.text = "Speech Result: --"
-                tokenizerInputEditText.visibility = View.GONE
-                tokenizerOutputTextView.visibility = View.GONE
-                trackingResultTextView.visibility = View.GONE
-                transcriptTextView.visibility = View.VISIBLE
-                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
-                multimodalImageView.visibility = View.GONE
-                llmInputLabel.visibility = View.GONE
-                llmInputEditText.visibility = View.GONE
-                llmSendButton.visibility = View.GONE
-                llmOutputLabel.visibility = View.GONE
-                llmChatContainer.visibility = View.GONE
-                llmStatusTextView.visibility = View.GONE
-                voiceInputEditText.visibility = View.GONE
-                voiceStatusTextView.visibility = View.GONE
-                voiceGenerateButton.visibility = View.GONE
-                voiceEnvSpinner.visibility = View.GONE
-                voiceResultTextView.visibility = View.GONE
-                // Speech-specific UI
-                // 言語選択はMicモード時のみ(Wavはauto固定)
-                speechLanguageLabel.visibility = if (isMicMode) View.VISIBLE else View.GONE
-                speechLanguageSpinner.visibility = if (isMicMode) View.VISIBLE else View.GONE
-                speechModeRadioGroup.visibility = View.VISIBLE
-                diarizationCheckBox.visibility = View.VISIBLE
-                liveModeCheckBox.visibility = if (isMicMode) View.VISIBLE else View.GONE
-                speechRunButton.visibility = if (isMicMode) View.GONE else View.VISIBLE
-                micRecordButton.visibility = if (isMicMode) View.VISIBLE else View.GONE
-                waveformView.visibility = if (isMicMode) View.VISIBLE else View.GONE
-                waveformInfoTextView.visibility = if (isMicMode) View.VISIBLE else View.GONE
-                voiceWaveformView.visibility = View.GONE
-                voiceReplayButton.visibility = View.GONE
             }
+
             AlgorithmType.LLM -> {
-                modeRadioGroup.visibility = View.GONE
-                imageView.visibility = View.GONE
-                cameraPreviewView.visibility = View.GONE
-                resultScrollView.visibility = View.VISIBLE
-                classificationResultTextView.visibility = View.GONE
-                tokenizerInputEditText.visibility = View.GONE
-                tokenizerOutputTextView.visibility = View.GONE
-                trackingResultTextView.visibility = View.GONE
-                transcriptTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
-                multimodalImageView.visibility = View.GONE
-                llmInputLabel.visibility = View.VISIBLE
-                llmInputEditText.visibility = View.VISIBLE
-                llmSendButton.visibility = View.VISIBLE
-                llmOutputLabel.visibility = View.VISIBLE
-                llmChatContainer.visibility = View.VISIBLE
-                llmStatusTextView.visibility = View.VISIBLE
-                voiceInputEditText.visibility = View.GONE
-                voiceStatusTextView.visibility = View.GONE
-                voiceGenerateButton.visibility = View.GONE
-                voiceEnvSpinner.visibility = View.GONE
-                voiceResultTextView.visibility = View.GONE
-                speechLanguageLabel.visibility = View.GONE
-                speechLanguageSpinner.visibility = View.GONE
-                speechModeRadioGroup.visibility = View.GONE
-                diarizationCheckBox.visibility = View.GONE
-                liveModeCheckBox.visibility = View.GONE
-                speechRunButton.visibility = View.GONE
-                micRecordButton.visibility = View.GONE
-                waveformView.visibility = View.GONE
-                waveformInfoTextView.visibility = View.GONE
-                voiceWaveformView.visibility = View.GONE
-                voiceReplayButton.visibility = View.GONE
-                // モード切り替え時にリセット(ダウンロードはSend押下時)
                 llmInputEditText.setText("Hello!")
                 llmChatContainer.removeAllViews()
                 llmStatusTextView.text = "Status: Press Send to download model and run"
                 llmSendButton.isEnabled = true
             }
+
             AlgorithmType.MULTIMODAL_LLM -> {
-                modeRadioGroup.visibility = View.VISIBLE
-                imageView.visibility = View.GONE
-                if (isImageMode) {
-                    cameraPreviewView.visibility = View.GONE
-                } else {
-                    cameraPreviewView.visibility = View.VISIBLE
-                }
-                resultScrollView.visibility = View.VISIBLE
-                classificationResultTextView.visibility = View.GONE
-                tokenizerInputEditText.visibility = View.GONE
-                tokenizerOutputTextView.visibility = View.GONE
-                trackingResultTextView.visibility = View.GONE
-                transcriptTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
-                multimodalImageView.visibility = View.VISIBLE
-                llmInputLabel.visibility = View.VISIBLE
-                llmInputEditText.visibility = View.VISIBLE
-                llmSendButton.visibility = View.VISIBLE
-                llmOutputLabel.visibility = View.VISIBLE
-                llmChatContainer.visibility = View.VISIBLE
-                llmStatusTextView.visibility = View.VISIBLE
-                voiceInputEditText.visibility = View.GONE
-                voiceStatusTextView.visibility = View.GONE
-                voiceGenerateButton.visibility = View.GONE
-                voiceEnvSpinner.visibility = View.GONE
-                voiceResultTextView.visibility = View.GONE
-                speechLanguageLabel.visibility = View.GONE
-                speechLanguageSpinner.visibility = View.GONE
-                speechModeRadioGroup.visibility = View.GONE
-                diarizationCheckBox.visibility = View.GONE
-                liveModeCheckBox.visibility = View.GONE
-                speechRunButton.visibility = View.GONE
-                micRecordButton.visibility = View.GONE
-                waveformView.visibility = View.GONE
-                waveformInfoTextView.visibility = View.GONE
-                voiceWaveformView.visibility = View.GONE
-                voiceReplayButton.visibility = View.GONE
-                // モード切り替え時にリセット(ダウンロードはSend押下時)
                 llmInputEditText.setText("What is in this image?")
                 llmChatContainer.removeAllViews()
                 llmStatusTextView.text = "Status: Press Send to download model and run"
@@ -1087,105 +978,30 @@ class MainActivity : AppCompatActivity() {
             }
 
             AlgorithmType.TEXT_TO_SPEECH -> {
-                modeRadioGroup.visibility = View.GONE
-                imageView.visibility = View.GONE
-                cameraPreviewView.visibility = View.GONE
-                resultScrollView.visibility = View.VISIBLE
-                classificationResultTextView.visibility = View.GONE
-                tokenizerInputEditText.visibility = View.GONE
-                tokenizerOutputTextView.visibility = View.GONE
-                trackingResultTextView.visibility = View.GONE
-                transcriptTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
-                multimodalImageView.visibility = View.GONE
-                llmInputLabel.visibility = View.GONE
-                llmInputEditText.visibility = View.GONE
-                llmSendButton.visibility = View.GONE
-                llmOutputLabel.visibility = View.GONE
-                llmChatContainer.visibility = View.GONE
-                llmStatusTextView.visibility = View.GONE
-                voiceInputEditText.visibility = View.VISIBLE
-                voiceStatusTextView.visibility = View.VISIBLE
-                voiceGenerateButton.visibility = View.VISIBLE
-                voiceEnvSpinner.visibility = View.VISIBLE
-                voiceResultTextView.visibility = View.VISIBLE
-                speechLanguageLabel.visibility = View.GONE
-                speechLanguageSpinner.visibility = View.GONE
-                speechModeRadioGroup.visibility = View.GONE
-                diarizationCheckBox.visibility = View.GONE
-                liveModeCheckBox.visibility = View.GONE
-                speechRunButton.visibility = View.GONE
-                micRecordButton.visibility = View.GONE
-                waveformView.visibility = View.GONE
-                waveformInfoTextView.visibility = View.GONE
-                voiceWaveformView.visibility = View.VISIBLE
                 voiceWaveformView.clear()
-                voiceReplayButton.visibility = View.GONE
                 voiceGenerateButton.isEnabled = true
                 voiceResultTextView.text = ""
-                voiceStatusTextView.text = "Status: Press Generate to download model and synthesize"
+                voiceStatusTextView.text =
+                    "Status: Press Generate to download model and synthesize"
             }
 
-            else -> {
-                modeRadioGroup.visibility = View.VISIBLE
-                if (isImageMode) {
-                    imageView.visibility = View.VISIBLE
-                    cameraPreviewView.visibility = View.GONE
-                } else {
-                    imageView.visibility = View.VISIBLE
-                    cameraPreviewView.visibility = View.VISIBLE
-                }
-                resultScrollView.visibility = View.GONE
-                classificationResultTextView.visibility = View.GONE
-                tokenizerInputEditText.visibility = View.GONE
-                tokenizerOutputTextView.visibility = View.GONE
-                trackingResultTextView.visibility = View.GONE
-                transcriptTextView.visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerInputLabel).visibility = View.GONE
-                findViewById<TextView>(R.id.tokenizerOutputLabel).visibility = View.GONE
-                multimodalImageView.visibility = View.GONE
-                llmInputLabel.visibility = View.GONE
-                llmInputEditText.visibility = View.GONE
-                llmSendButton.visibility = View.GONE
-                llmOutputLabel.visibility = View.GONE
-                llmChatContainer.visibility = View.GONE
-                llmStatusTextView.visibility = View.GONE
-                voiceInputEditText.visibility = View.GONE
-                voiceStatusTextView.visibility = View.GONE
-                voiceGenerateButton.visibility = View.GONE
-                voiceEnvSpinner.visibility = View.GONE
-                voiceResultTextView.visibility = View.GONE
-                speechLanguageLabel.visibility = View.GONE
-                speechLanguageSpinner.visibility = View.GONE
-                speechModeRadioGroup.visibility = View.GONE
-                diarizationCheckBox.visibility = View.GONE
-                liveModeCheckBox.visibility = View.GONE
-                speechRunButton.visibility = View.GONE
-                micRecordButton.visibility = View.GONE
-                waveformView.visibility = View.GONE
-                waveformInfoTextView.visibility = View.GONE
-                voiceWaveformView.visibility = View.GONE
-                voiceReplayButton.visibility = View.GONE
-            }
+            else -> Unit
         }
 
-        // カメラモードでは処理結果(imageView)を表示領域いっぱいに拡大(centerCrop)して、
-        // 上下の帯(正方形クロップのfitCenterでできる透明余白から背面のライブプレビューが
-        // 透けて見える現象)を解消する。imageViewが不透明な結果画像で領域全体を覆うため、
-        // 背面のcameraPreviewViewも隠れる。画像モードでは全体を欠けなく見せるためfitCenter。
-        if (isCameraMode) {
-            imageView.scaleType = ImageView.ScaleType.CENTER_CROP
+        imageView.scaleType = if (isCameraMode) {
+            ImageView.ScaleType.CENTER_CROP
         } else {
-            imageView.scaleType = ImageView.ScaleType.FIT_CENTER
+            ImageView.ScaleType.FIT_CENTER
         }
 
-        // カメラ選択スピナーはカメラモード時のみ表示
         cameraSpinner.visibility =
-            if (modeRadioGroup.visibility == View.VISIBLE && isCameraMode) View.VISIBLE else View.GONE
-
-        // 画像系/TokenizeにはRunボタンを表示(押して初めてダウンロード+実行)
-        visionRunButton.visibility = if (needsVisionRunButton()) View.VISIBLE else View.GONE
+            if (modeRadioGroup.visibility == View.VISIBLE && isCameraMode) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+        visionRunButton.visibility =
+            if (needsVisionRunButton()) View.VISIBLE else View.GONE
     }
 
     private fun switchAlgorithm(newAlgorithm: AlgorithmType) {
@@ -1248,7 +1064,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun releaseCurrentAlgorithm() {
         try {
-            stopMicRecording()
+            stopMicRecording(finalize = false)
             poseEstimatorSample.releasePoseEstimator()
             objectDetectionSample.releaseObjectDetection()
             classificationSample.releaseClassification()
@@ -1310,6 +1126,79 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * モデルのダウンロード、初期化、進捗・結果表示を共通の非同期フローで実行する。
+     * ダウンロード済みの場合も同じ経路で初期化し、成功後にonReadyをUIスレッドで呼ぶ。
+     */
+    private fun initializeDownloadedModelAsync(
+        logName: String,
+        downloadingMessage: String,
+        readyMessage: String,
+        initializationErrorMessage: String,
+        download: (ModelDownloadListener) -> Boolean,
+        initialize: () -> Boolean,
+        onReady: () -> Unit = {
+            if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
+                processImageMode()
+            }
+        }
+    ) {
+        if (!isDownloadingModel.compareAndSet(false, true)) return
+        processingTimeTextView.text = downloadingMessage
+        Log.i("AILIA_Main", "$logName: submitting download/init task")
+
+        cameraExecutor.execute {
+            try {
+                val downloaded = download(object : ModelDownloadListener {
+                    override fun onProgress(
+                        fileName: String,
+                        bytesDownloaded: Long,
+                        totalBytes: Long
+                    ) {
+                        val percent = if (totalBytes > 0) {
+                            bytesDownloaded * 100 / totalBytes
+                        } else {
+                            0
+                        }
+                        runOnUiThread {
+                            processingTimeTextView.text = "Downloading $fileName... $percent%"
+                        }
+                    }
+
+                    override fun onComplete() = Unit
+
+                    override fun onError(error: String) {
+                        runOnUiThread {
+                            processingTimeTextView.text = "Download error: $error"
+                        }
+                    }
+                })
+                Log.i("AILIA_Main", "$logName: download result=$downloaded")
+                if (!downloaded) return@execute
+
+                val success = initialize()
+                Log.i("AILIA_Main", "$logName: initialization result=$success")
+                isInitialized = success
+                isDownloadingModel.set(false)
+                runOnUiThread {
+                    if (success) {
+                        processingTimeTextView.text = readyMessage
+                        onReady()
+                    } else {
+                        processingTimeTextView.text = initializationErrorMessage
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("AILIA_Main", "$logName: download/init error", e)
+                runOnUiThread {
+                    processingTimeTextView.text = "Error: ${e.message}"
+                }
+            } finally {
+                isDownloadingModel.set(false)
+            }
+        }
+    }
+
     private fun initializeAilia() {
         try {
             when (currentAlgorithm) {
@@ -1322,106 +1211,26 @@ class MainActivity : AppCompatActivity() {
 
                 AlgorithmType.OBJECT_DETECTION -> {
                     if (selectedRuntime == "ONNX" && useDetr) {
-                        // DETRはダウンロードが必要なため非同期で初期化する
-                        if (isDownloadingModel.get()) return
-                        isDownloadingModel.set(true)
-                        runOnUiThread {
-                            processingTimeTextView.text = "Downloading DETR model..."
-                        }
-                        cameraExecutor.execute {
-                            try {
-                                val downloaded = detrSample.downloadModel(object : AiliaDetrSample.DownloadListener {
-                                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                        val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Downloading $fileName... $percent%"
-                                        }
-                                    }
-                                    override fun onComplete() {}
-                                    override fun onError(error: String) {
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Download error: $error"
-                                        }
-                                    }
-                                })
-                                if (downloaded) {
-                                    val success = detrSample.initialize(selectedEnvId)
-                                    isInitialized = success
-                                    isDownloadingModel.set(false)
-                                    runOnUiThread {
-                                        if (success) {
-                                            processingTimeTextView.text = "DETR model ready"
-                                            if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
-                                                processImageMode()
-                                            }
-                                        } else {
-                                            processingTimeTextView.text = "Failed to initialize DETR"
-                                        }
-                                    }
-                                } else {
-                                    isDownloadingModel.set(false)
-                                }
-                            } catch (e: Exception) {
-                                Log.e("AILIA_Main", "DETR: exception in cameraExecutor", e)
-                                isDownloadingModel.set(false)
-                                runOnUiThread {
-                                    processingTimeTextView.text = "Error: ${e.message}"
-                                }
-                            }
-                        }
+                        initializeDownloadedModelAsync(
+                            logName = "DETR",
+                            downloadingMessage = "Downloading DETR model...",
+                            readyMessage = "DETR model ready",
+                            initializationErrorMessage = "Failed to initialize DETR",
+                            download = { detrSample.downloadModel(it) },
+                            initialize = { detrSample.initialize(selectedEnvId) }
+                        )
                         return
                     } else if (selectedRuntime == "ONNX") {
-                        if (isDownloadingModel.get()) return
-                        isDownloadingModel.set(true)
-                        runOnUiThread {
-                            processingTimeTextView.text = "Downloading ONNX model..."
-                        }
-                        Log.i("AILIA_Main", "ONNX ObjDet: submitting download task to cameraExecutor")
-                        cameraExecutor.execute {
-                            Log.i("AILIA_Main", "ONNX ObjDet: cameraExecutor task started")
-                            try {
-                                val downloaded = onnxObjectDetectionSample.downloadModel(object : AiliaOnnxObjectDetectionSample.DownloadListener {
-                                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                        val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Downloading $fileName... $percent%"
-                                        }
-                                    }
-                                    override fun onComplete() {}
-                                    override fun onError(error: String) {
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Download error: $error"
-                                        }
-                                    }
-                                })
-                                Log.i("AILIA_Main", "ONNX ObjDet: download result=$downloaded")
-                                if (downloaded) {
-                                    Log.i("AILIA_Main", "ONNX ObjDet: initializing with envId=$selectedEnvId")
-                                    val success = onnxObjectDetectionSample.initializeObjectDetection(selectedEnvId)
-                                    Log.i("AILIA_Main", "ONNX ObjDet: initialization result=$success")
-                                    isInitialized = success
-                                    isDownloadingModel.set(false)
-                                    runOnUiThread {
-                                        if (success) {
-                                            processingTimeTextView.text = "ONNX model ready"
-                                            if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
-                                                processImageMode()
-                                            }
-                                        } else {
-                                            processingTimeTextView.text = "Failed to initialize ONNX model"
-                                        }
-                                    }
-                                } else {
-                                    isDownloadingModel.set(false)
-                                }
-                            } catch (e: Exception) {
-                                Log.e("AILIA_Main", "ONNX ObjDet: exception in cameraExecutor", e)
-                                isDownloadingModel.set(false)
-                                runOnUiThread {
-                                    processingTimeTextView.text = "Error: ${e.message}"
-                                }
+                        initializeDownloadedModelAsync(
+                            logName = "ONNX ObjDet",
+                            downloadingMessage = "Downloading ONNX model...",
+                            readyMessage = "ONNX model ready",
+                            initializationErrorMessage = "Failed to initialize ONNX model",
+                            download = { onnxObjectDetectionSample.downloadModel(it) },
+                            initialize = {
+                                onnxObjectDetectionSample.initializeObjectDetection(selectedEnvId)
                             }
-                        }
+                        )
                         return
                     } else {
                         //val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
@@ -1435,106 +1244,28 @@ class MainActivity : AppCompatActivity() {
 
                 AlgorithmType.CLASSIFICATION -> {
                     if (selectedRuntime == "ONNX") {
-                        if (isDownloadingModel.get()) return
-                        isDownloadingModel.set(true)
-                        runOnUiThread {
-                            processingTimeTextView.text = "Downloading ONNX model..."
-                        }
-                        Log.i("AILIA_Main", "ONNX Classification: submitting download task to cameraExecutor")
-                        cameraExecutor.execute {
-                            Log.i("AILIA_Main", "ONNX Classification: cameraExecutor task started")
-                            try {
-                                val downloaded = onnxClassificationSample.downloadModel(object : AiliaOnnxClassificationSample.DownloadListener {
-                                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                        val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Downloading $fileName... $percent%"
-                                        }
-                                    }
-                                    override fun onComplete() {}
-                                    override fun onError(error: String) {
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Download error: $error"
-                                        }
-                                    }
-                                })
-                                Log.i("AILIA_Main", "ONNX Classification: download result=$downloaded")
-                                if (downloaded) {
-                                    Log.i("AILIA_Main", "ONNX Classification: initializing with envId=$selectedEnvId")
-                                    val success = onnxClassificationSample.initializeClassification(selectedEnvId)
-                                    Log.i("AILIA_Main", "ONNX Classification: initialization result=$success")
-                                    isInitialized = success
-                                    isDownloadingModel.set(false)
-                                    runOnUiThread {
-                                        if (success) {
-                                            processingTimeTextView.text = "ONNX model ready"
-                                            if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
-                                                processImageMode()
-                                            }
-                                        } else {
-                                            processingTimeTextView.text = "Failed to initialize ONNX model"
-                                        }
-                                    }
-                                } else {
-                                    isDownloadingModel.set(false)
-                                }
-                            } catch (e: Exception) {
-                                Log.e("AILIA_Main", "ONNX Classification: exception in cameraExecutor", e)
-                                isDownloadingModel.set(false)
-                                runOnUiThread {
-                                    processingTimeTextView.text = "Error: ${e.message}"
-                                }
+                        initializeDownloadedModelAsync(
+                            logName = "ONNX Classification",
+                            downloadingMessage = "Downloading ONNX model...",
+                            readyMessage = "ONNX model ready",
+                            initializationErrorMessage = "Failed to initialize ONNX model",
+                            download = { onnxClassificationSample.downloadModel(it) },
+                            initialize = {
+                                onnxClassificationSample.initializeClassification(selectedEnvId)
                             }
-                        }
+                        )
                         return
                     } else if (classificationSample.modelType == TFLiteClassificationModelType.RESNET50) {
-                        // ResNet50 (TFLite/int8) はダウンロードが必要なため非同期で初期化する
-                        if (isDownloadingModel.get()) return
-                        isDownloadingModel.set(true)
-                        runOnUiThread {
-                            processingTimeTextView.text = "Downloading TFLite model..."
-                        }
-                        cameraExecutor.execute {
-                            try {
-                                val downloaded = classificationSample.downloadModel(object : AiliaTFLiteClassificationSample.DownloadListener {
-                                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                        val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Downloading $fileName... $percent%"
-                                        }
-                                    }
-                                    override fun onComplete() {}
-                                    override fun onError(error: String) {
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Download error: $error"
-                                        }
-                                    }
-                                })
-                                if (downloaded) {
-                                    val success = classificationSample.initializeFromFile(env = selectedEnvId)
-                                    isInitialized = success
-                                    isDownloadingModel.set(false)
-                                    runOnUiThread {
-                                        if (success) {
-                                            processingTimeTextView.text = "TFLite model ready"
-                                            if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
-                                                processImageMode()
-                                            }
-                                        } else {
-                                            processingTimeTextView.text = "Failed to initialize TFLite model"
-                                        }
-                                    }
-                                } else {
-                                    isDownloadingModel.set(false)
-                                }
-                            } catch (e: Exception) {
-                                Log.e("AILIA_Main", "TFLite ResNet50: exception in cameraExecutor", e)
-                                isDownloadingModel.set(false)
-                                runOnUiThread {
-                                    processingTimeTextView.text = "Error: ${e.message}"
-                                }
+                        initializeDownloadedModelAsync(
+                            logName = "TFLite ResNet50",
+                            downloadingMessage = "Downloading TFLite model...",
+                            readyMessage = "TFLite model ready",
+                            initializationErrorMessage = "Failed to initialize TFLite model",
+                            download = { classificationSample.downloadModel(it) },
+                            initialize = {
+                                classificationSample.initializeFromFile(env = selectedEnvId)
                             }
-                        }
+                        )
                         return
                     } else {
                         val classificationModel: ByteArray? = loadRawFile(R.raw.mobilenetv2)
@@ -1546,110 +1277,32 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 AlgorithmType.TOKENIZE -> {
-                    if (isDownloadingModel.get()) return
-                    isDownloadingModel.set(true)
-                    runOnUiThread {
-                        processingTimeTextView.text = "Downloading MiniLMv2 model..."
-                    }
-                    Log.i("AILIA_Main", "MiniLMv2: submitting download task to cameraExecutor")
-                    cameraExecutor.execute {
-                        try {
-                            val downloaded = miniLMv2Sample.downloadModel(object : AiliaMiniLMv2Sample.DownloadListener {
-                                override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                    val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                    runOnUiThread {
-                                        processingTimeTextView.text = "Downloading $fileName... $percent%"
-                                    }
-                                }
-                                override fun onComplete() {}
-                                override fun onError(error: String) {
-                                    runOnUiThread {
-                                        processingTimeTextView.text = "Download error: $error"
-                                    }
-                                }
-                            })
-                            Log.i("AILIA_Main", "MiniLMv2: download result=$downloaded")
-                            if (downloaded) {
-                                val success = miniLMv2Sample.initialize(selectedEnvId)
-                                Log.i("AILIA_Main", "MiniLMv2: initialization result=$success")
-                                isInitialized = success
-                                isDownloadingModel.set(false)
-                                runOnUiThread {
-                                    if (success) {
-                                        processingTimeTextView.text = "MiniLMv2 ready"
-                                        processImageMode()
-                                    } else {
-                                        processingTimeTextView.text = "Failed to initialize MiniLMv2"
-                                    }
-                                }
-                            } else {
-                                isDownloadingModel.set(false)
-                            }
-                        } catch (e: Exception) {
-                            Log.e("AILIA_Main", "MiniLMv2: exception in cameraExecutor", e)
-                            isDownloadingModel.set(false)
-                            runOnUiThread {
-                                processingTimeTextView.text = "Error: ${e.message}"
-                            }
-                        }
-                    }
+                    initializeDownloadedModelAsync(
+                        logName = "MiniLMv2",
+                        downloadingMessage = "Downloading MiniLMv2 model...",
+                        readyMessage = "MiniLMv2 ready",
+                        initializationErrorMessage = "Failed to initialize MiniLMv2",
+                        download = { miniLMv2Sample.downloadModel(it) },
+                        initialize = { miniLMv2Sample.initialize(selectedEnvId) },
+                        onReady = { processImageMode() }
+                    )
                     return
                 }
 
                 AlgorithmType.TRACKING -> {
                     if (selectedRuntime == "ONNX") {
-                        if (isDownloadingModel.get()) return
-                        isDownloadingModel.set(true)
-                        runOnUiThread {
-                            processingTimeTextView.text = "Downloading ONNX model..."
-                        }
-                        Log.i("AILIA_Main", "ONNX Tracking: submitting download task to cameraExecutor")
-                        cameraExecutor.execute {
-                            Log.i("AILIA_Main", "ONNX Tracking: cameraExecutor task started")
-                            try {
-                                val downloaded = onnxObjectDetectionSample.downloadModel(object : AiliaOnnxObjectDetectionSample.DownloadListener {
-                                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                        val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Downloading $fileName... $percent%"
-                                        }
-                                    }
-                                    override fun onComplete() {}
-                                    override fun onError(error: String) {
-                                        runOnUiThread {
-                                            processingTimeTextView.text = "Download error: $error"
-                                        }
-                                    }
-                                })
-                                Log.i("AILIA_Main", "ONNX Tracking: download result=$downloaded")
-                                if (downloaded) {
-                                    Log.i("AILIA_Main", "ONNX Tracking: initializing with envId=$selectedEnvId")
-                                    val detectorSuccess = onnxObjectDetectionSample.initializeObjectDetection(selectedEnvId)
-                                    val trackerSuccess = if (detectorSuccess) trackerSample.initializeTracker() else false
-                                    Log.i("AILIA_Main", "ONNX Tracking: detector=$detectorSuccess, tracker=$trackerSuccess")
-                                    isInitialized = trackerSuccess
-                                    isDownloadingModel.set(false)
-                                    runOnUiThread {
-                                        if (trackerSuccess) {
-                                            processingTimeTextView.text = "ONNX model ready"
-                                            if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
-                                                processImageMode()
-                                            }
-                                        } else {
-                                            processingTimeTextView.text = "Failed to initialize ONNX tracking"
-                                        }
-                                    }
-                                } else {
-                                    isDownloadingModel.set(false)
-                                }
-                            } catch (e: Exception) {
-                                Log.e("AILIA_Main", "ONNX Tracking: exception in cameraExecutor", e)
-                                isDownloadingModel.set(false)
-                                runOnUiThread {
-                                    processingTimeTextView.text = "Error: ${e.message}"
-                                }
+                        initializeDownloadedModelAsync(
+                            logName = "ONNX Tracking",
+                            downloadingMessage = "Downloading ONNX model...",
+                            readyMessage = "ONNX model ready",
+                            initializationErrorMessage = "Failed to initialize ONNX tracking",
+                            download = { onnxObjectDetectionSample.downloadModel(it) },
+                            initialize = {
+                                val detectorSuccess =
+                                    onnxObjectDetectionSample.initializeObjectDetection(selectedEnvId)
+                                detectorSuccess && trackerSample.initializeTracker()
                             }
-                        }
+                        )
                         return
                     } else {
                         //val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
@@ -1665,53 +1318,14 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 AlgorithmType.BACKGROUND_REMOVAL -> {
-                    // U-2-Netはダウンロードが必要なため非同期で初期化する
-                    if (isDownloadingModel.get()) return
-                    isDownloadingModel.set(true)
-                    runOnUiThread {
-                        processingTimeTextView.text = "Downloading U-2-Net model..."
-                    }
-                    cameraExecutor.execute {
-                        try {
-                            val downloaded = u2netSample.downloadModel(object : AiliaU2NetSample.DownloadListener {
-                                override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                                    val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                                    runOnUiThread {
-                                        processingTimeTextView.text = "Downloading $fileName... $percent%"
-                                    }
-                                }
-                                override fun onComplete() {}
-                                override fun onError(error: String) {
-                                    runOnUiThread {
-                                        processingTimeTextView.text = "Download error: $error"
-                                    }
-                                }
-                            })
-                            if (downloaded) {
-                                val success = u2netSample.initialize(selectedEnvId)
-                                isInitialized = success
-                                isDownloadingModel.set(false)
-                                runOnUiThread {
-                                    if (success) {
-                                        processingTimeTextView.text = "U-2-Net model ready"
-                                        if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
-                                            processImageMode()
-                                        }
-                                    } else {
-                                        processingTimeTextView.text = "Failed to initialize U-2-Net"
-                                    }
-                                }
-                            } else {
-                                isDownloadingModel.set(false)
-                            }
-                        } catch (e: Exception) {
-                            Log.e("AILIA_Main", "U2Net: exception in cameraExecutor", e)
-                            isDownloadingModel.set(false)
-                            runOnUiThread {
-                                processingTimeTextView.text = "Error: ${e.message}"
-                            }
-                        }
-                    }
+                    initializeDownloadedModelAsync(
+                        logName = "U2Net",
+                        downloadingMessage = "Downloading U-2-Net model...",
+                        readyMessage = "U-2-Net model ready",
+                        initializationErrorMessage = "Failed to initialize U-2-Net",
+                        download = { u2netSample.downloadModel(it) },
+                        initialize = { u2netSample.initialize(selectedEnvId) }
+                    )
                     return
                 }
 
@@ -2020,7 +1634,7 @@ class MainActivity : AppCompatActivity() {
                 // モデルダウンロード+初期化はGenerate押下時に行う
                 if (!isInitialized) {
                     voiceSample.modelType = selectedVoiceModelType
-                    val success = voiceSample.initializeVoice(envId = selectedEnvId, listener = object : AiliaVoiceSample.DownloadListener {
+                    val success = voiceSample.initializeVoice(envId = selectedEnvId, listener = object : ModelDownloadListener {
                         override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                             val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
                             runOnUiThread {
@@ -2098,7 +1712,7 @@ class MainActivity : AppCompatActivity() {
                     speechSample.language = newLanguage
                     // 言語変更のため要再初期化(ダウンロードはRun/Record押下時)
                     if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
-                        stopMicRecording()
+                        stopMicRecording(finalize = false)
                         speechSample.releaseSpeech()
                         isInitialized = false
                         isDownloadingModel.set(false)
@@ -2122,7 +1736,7 @@ class MainActivity : AppCompatActivity() {
                     liveModeCheckBox.visibility = View.GONE
                     speechLanguageLabel.visibility = View.GONE
                     speechLanguageSpinner.visibility = View.GONE
-                    stopMicRecording()
+                    stopMicRecording(finalize = false)
                     // liveモード設定が変わるため要再初期化(ダウンロードはRun押下時)
                     speechSample.releaseSpeech()
                     isInitialized = false
@@ -2155,7 +1769,7 @@ class MainActivity : AppCompatActivity() {
         diarizationCheckBox.setOnCheckedChangeListener { _, isChecked ->
             speechSample.diarizationEnabled = isChecked
             // 設定変更のため要再初期化(ダウンロードはRun/Record押下時)
-            stopMicRecording()
+            stopMicRecording(finalize = false)
             speechSample.releaseSpeech()
             isInitialized = false
             isDownloadingModel.set(false)
@@ -2167,7 +1781,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupLiveModeCheckBox() {
         liveModeCheckBox.setOnCheckedChangeListener { _, _ ->
             // LIVEフラグ変更のため要再初期化(ダウンロードはRun/Record押下時)
-            stopMicRecording()
+            stopMicRecording(finalize = false)
             speechSample.releaseSpeech()
             isInitialized = false
             isDownloadingModel.set(false)
@@ -2208,7 +1822,7 @@ class MainActivity : AppCompatActivity() {
         micRecordButton.isEnabled = false
         speechExecutor.execute {
             try {
-                val downloaded = speechSample.downloadModel(selectedSpeechModelType, object : AiliaSpeechSample.DownloadListener {
+                val downloaded = speechSample.downloadModel(selectedSpeechModelType, object : ModelDownloadListener {
                     override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                         val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
                         runOnUiThread {
@@ -2295,7 +1909,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupMicRecordButton() {
         micRecordButton.setOnClickListener {
-            if (isRecording.get()) {
+            if (speechSample.isMicRecording) {
                 stopMicRecording()
             } else {
                 if (isDownloadingModel.get()) {
@@ -2319,32 +1933,43 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val sampleRate = 16000
-        val channelConfig = AudioFormat.CHANNEL_IN_MONO
-        val audioFormat = AudioFormat.ENCODING_PCM_FLOAT
-        // 波形表示を滑らかにするため100msごとに読み出し、認識には従来通り1秒分をまとめて渡す
-        val readChunkSize = sampleRate / 10
-        val recognitionChunkSize = sampleRate
-        // AudioRecord internal buffer: at least 2 seconds
-        val audioRecordBufferBytes = recognitionChunkSize * 4 * 2
-
-        try {
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                audioRecordBufferBytes
-            )
-
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                classificationResultTextView.text = "Failed to initialize AudioRecord"
-                audioRecord = null
-                return
+        val started = speechSample.startMicRecording(object : AiliaSpeechSample.MicRecordingListener {
+            override fun onWaveform(samples: FloatArray, sampleRate: Int) {
+                val blocks = WaveformView.peakBlocks(samples, samples.size, sampleRate)
+                runOnUiThread {
+                    waveformView.push(blocks)
+                }
             }
 
-            audioRecord?.startRecording()
-            isRecording.set(true)
+            override fun onResult(lines: List<String>, isFinal: Boolean) {
+                runOnUiThread {
+                    appendTranscriptLines(lines)
+                    if (isFinal) {
+                        classificationResultTextView.text =
+                            if (speechTranscript.isEmpty()) "Speech Result: (no speech detected)" else "Speech Result:"
+                        recTimerHandler.removeCallbacks(recTimerRunnable)
+                        micRecordButton.text = "Record"
+                        micRecordButton.isEnabled = true
+                        waveformInfoTextView.text = ""
+                    }
+                }
+            }
+
+            override fun onError(error: String) {
+                runOnUiThread {
+                    Log.e("AILIA_Main", "Microphone recording error: $error")
+                    classificationResultTextView.text = "Speech Result: Error - $error"
+                    if (!speechSample.isMicRecording) {
+                        recTimerHandler.removeCallbacks(recTimerRunnable)
+                        micRecordButton.text = "Record"
+                        waveformInfoTextView.text = ""
+                    }
+                    micRecordButton.isEnabled = true
+                }
+            }
+        })
+
+        if (started) {
             micRecordButton.text = "Stop"
             classificationResultTextView.text = "Recording..."
             clearTranscript()
@@ -2354,97 +1979,16 @@ class MainActivity : AppCompatActivity() {
             recStartMs = android.os.SystemClock.elapsedRealtime()
             waveformInfoTextView.text = "● REC 00:00"
             recTimerHandler.post(recTimerRunnable)
-
-            // マイク読み出しループ。認識(transcribe)は専用のspeechExecutorへ
-            // 非同期に投げることで、認識中もマイク読み出しと波形表示を止めない。
-            cameraExecutor.execute {
-                val floatBuffer = FloatArray(readChunkSize)
-                val recognitionBuffer = FloatArray(recognitionChunkSize)
-                var recognitionFill = 0
-
-                while (isRecording.get()) {
-                    val readResult = audioRecord?.read(floatBuffer, 0, floatBuffer.size, AudioRecord.READ_BLOCKING) ?: -1
-                    if (readResult > 0) {
-                        // 波形表示(約10msごとのピーク振幅ブロック、PCM_FLOATは[-1.0, 1.0])
-                        val blocks = WaveformView.peakBlocks(floatBuffer, readResult, sampleRate)
-                        runOnUiThread {
-                            waveformView.push(blocks)
-                        }
-
-                        // 認識には1秒分をまとめて渡す
-                        val toCopy = minOf(readResult, recognitionChunkSize - recognitionFill)
-                        System.arraycopy(floatBuffer, 0, recognitionBuffer, recognitionFill, toCopy)
-                        recognitionFill += toCopy
-                        if (recognitionFill < recognitionChunkSize) {
-                            continue
-                        }
-                        val chunk = recognitionBuffer.copyOf(recognitionFill)
-                        recognitionFill = 0
-                        speechExecutor.execute {
-                            if (!isInitialized) return@execute
-                            try {
-                                val lines = speechSample.pushLiveAudio(chunk, 1, sampleRate)
-                                if (lines.isNotEmpty()) {
-                                    runOnUiThread {
-                                        appendTranscriptLines(lines)
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                Log.e("AILIA_Main", "pushLiveAudio error (speech may have been released): ${e.message}")
-                            }
-                        }
-                    }
-                }
-
-                // 録音停止後、1秒に満たない残りの音声を送ってから確定処理
-                // (speechExecutorは単一スレッドなので、キュー済みのチャンク処理後に実行される)
-                val tail = recognitionBuffer.copyOf(recognitionFill)
-                speechExecutor.execute {
-                    if (!isInitialized) return@execute
-                    try {
-                        if (tail.isNotEmpty()) {
-                            val lines = speechSample.pushLiveAudio(tail, 1, sampleRate)
-                            runOnUiThread {
-                                appendTranscriptLines(lines)
-                            }
-                        }
-                        val finalLines = speechSample.finalizeLiveAudio()
-                        runOnUiThread {
-                            appendTranscriptLines(finalLines)
-                            classificationResultTextView.text =
-                                if (speechTranscript.isEmpty()) "Speech Result: (no speech detected)" else "Speech Result:"
-                        }
-                    } catch (e: Exception) {
-                        Log.e("AILIA_Main", "finalizeLiveAudio error (speech may have been released): ${e.message}")
-                    }
-                }
-            }
-        } catch (e: SecurityException) {
-            Log.e("AILIA_Main", "SecurityException starting mic recording: ${e.message}")
-            classificationResultTextView.text = "Microphone permission denied"
-        } catch (e: Exception) {
-            Log.e("AILIA_Main", "Error starting mic recording: ${e.message}")
-            classificationResultTextView.text = "Error starting recording: ${e.message}"
         }
     }
 
-    private fun stopMicRecording() {
-        if (isRecording.get()) {
-            isRecording.set(false)
-            try {
-                audioRecord?.stop()
-            } catch (e: Exception) {
-                Log.e("AILIA_Main", "Error stopping AudioRecord: ${e.message}")
-            }
-            try {
-                audioRecord?.release()
-            } catch (e: Exception) {
-                Log.e("AILIA_Main", "Error releasing AudioRecord: ${e.message}")
-            }
-            audioRecord = null
+    private fun stopMicRecording(finalize: Boolean = true) {
+        if (speechSample.isMicRecording) {
+            speechSample.stopMicRecording(finalize)
             recTimerHandler.removeCallbacks(recTimerRunnable)
             runOnUiThread {
                 micRecordButton.text = "Record"
+                micRecordButton.isEnabled = !finalize
                 waveformInfoTextView.text = ""
             }
         }
@@ -2796,7 +2340,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        stopMicRecording()
+        stopMicRecording(finalize = false)
         releaseCurrentAlgorithm()
         cameraExecutor.shutdown()
         speechExecutor.shutdown()

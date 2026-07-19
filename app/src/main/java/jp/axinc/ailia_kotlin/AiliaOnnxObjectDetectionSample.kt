@@ -20,19 +20,13 @@ class AiliaOnnxObjectDetectionSample {
         private const val PROTO_FILE = "yolox_s.opt.onnx.prototxt"
     }
 
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
-
     private var ailia: AiliaModel? = null
     private var detector: AiliaDetectorModel? = null
     private var isInitialized = false
     private var lastDetectionResults: List<AiliaTrackerSample.DetectionResult> = emptyList()
     var modelDir: String = ""
 
-    private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): Boolean {
+    private fun downloadFile(urlStr: String, fileName: String, listener: ModelDownloadListener? = null): Boolean {
         val dir = modelDir
         val path = "$dir/$fileName"
         val file = File(path)
@@ -69,7 +63,7 @@ class AiliaOnnxObjectDetectionSample {
         return true
     }
 
-    fun downloadModel(listener: DownloadListener? = null): Boolean {
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
         try {
             Log.i(TAG, "Starting ONNX model download/check...")
             downloadFile(PROTO_URL, PROTO_FILE, listener)

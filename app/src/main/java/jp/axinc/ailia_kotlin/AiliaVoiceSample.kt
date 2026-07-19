@@ -54,15 +54,9 @@ class AiliaVoiceSample {
         }
     }
 
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
-
     var modelType: VoiceModelType = VoiceModelType.GPT_SOVITS_V1
     var modelDir: String = ""
-    private var downloadListener: DownloadListener? = null
+    private var downloadListener: ModelDownloadListener? = null
 
     // 直近の合成結果(波形表示用)
     var lastAudioData: FloatArray? = null
@@ -201,7 +195,7 @@ class AiliaVoiceSample {
         )
     }
 
-    fun initializeVoice(envId: Int = -1, listener: DownloadListener? = null): Boolean {
+    fun initializeVoice(envId: Int = -1, listener: ModelDownloadListener? = null): Boolean {
         this.downloadListener = listener
         return try {
             Log.i(TAG, "Begin model download for $modelType")
