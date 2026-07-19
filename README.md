@@ -32,6 +32,7 @@ Models bundled in `res/raw` run without a download. Other models are downloaded 
 | Background Removal | [U-2-Net](app/src/main/java/jp/axinc/ailia_kotlin/AiliaU2NetSample.kt) | ailia SDK |
 | Zero-Shot Classification | [multilingual-MiniLMv2 L12](app/src/main/java/jp/axinc/ailia_kotlin/AiliaMiniLMv2Sample.kt) | ailia Tokenizer + ailia SDK |
 | Speech to Text | [Whisper / SenseVoice Small](app/src/main/java/jp/axinc/ailia_kotlin/AiliaSpeechSample.kt) | ailia AI Speech |
+| Speaker Verification | [WeSpeaker ResNet34 (VoxCeleb) + Silero VAD v6](app/src/main/java/jp/axinc/ailia_kotlin/AiliaWeSpeakerSample.kt) | ailia SDK |
 | Text to Speech | [GPT-SoVITS V1 / V2 / V3 / V2-Pro / V2-Pro Distill JA](app/src/main/java/jp/axinc/ailia_kotlin/AiliaVoiceSample.kt) | ailia AI Voice |
 | LLM | [Gemma 4 E2B / E4B / Gemma 2 2B](app/src/main/java/jp/axinc/ailia_kotlin/AiliaLLMSample.kt) | ailia LLM |
 | Multimodal LLM | [Gemma 3 4B](app/src/main/java/jp/axinc/ailia_kotlin/AiliaMultimodalLLMSample.kt) | ailia LLM |
@@ -47,6 +48,7 @@ Add only the JNI modules needed by the selected sample.
 | ByteTrack | `ailia-tracker-jni` plus the selected detector runtime |
 | multilingual-MiniLMv2 | `ailia-sdk-jni`, `ailia-tokenizer-jni` |
 | Whisper / SenseVoice | `ailia-speech-jni` |
+| WeSpeaker + Silero VAD v6 | `ailia-sdk-jni` |
 | GPT-SoVITS | `ailia-voice-jni`, `ailia-audio-jni`, `ailia-sdk-jni` |
 | Gemma text or multimodal | `ailia-llm-jni` |
 
@@ -71,6 +73,7 @@ The inference-facing result classes are independent of the SDK wrappers:
 - Detection and tracking: `DetectionResult.kt`, `ModelInferenceResult.kt`, `CocoLabels.kt`, and `CategoryColors.kt`
 - Classification: `ClassificationResult.kt`, `ModelInferenceResult.kt`, and `ImageNetLabels.kt`
 - Background removal: `ModelInferenceResult.kt` (`SegmentationMask`)
+- Speaker verification: `SpeakerVerificationAudio.kt` and `SpeakerProfileStore.kt`
 
 `detect`, `classify`, and `predictMask` return typed results without drawing. `drawDetections` and `drawMask` are optional Android renderers. The `process...` methods remain small compatibility wrappers used by the demo UI.
 

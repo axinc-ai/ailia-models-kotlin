@@ -1,6 +1,7 @@
 package jp.axinc.ailia_kotlin
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -9,10 +10,12 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.os.Bundle
+import android.net.Uri
 import android.util.Log
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -75,6 +78,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var transcriptTextView: TextView
     private lateinit var rootScrollView: ScrollView
     private lateinit var visionRunButton: Button
+    private lateinit var speakerProfileLabel: TextView
+    private lateinit var speakerProfileSpinner: Spinner
+    private lateinit var speakerInputModeRadioGroup: RadioGroup
+    private lateinit var speakerSelectWavButton: Button
+    private lateinit var speakerVerifyButton: Button
+    private lateinit var speakerEnrollmentLabel: TextView
+    private lateinit var speakerNameEditText: EditText
+    private lateinit var speakerRegisterButton: Button
+    private lateinit var speakerWaveformView: WaveformView
+    private lateinit var speakerStatusTextView: TextView
+    private lateinit var speakerResultTextView: TextView
 
     // 画像系/Tokenizeアルゴリズムは、Runボタンが押されるまで
     // モデルのダウンロードと実行を行わない
@@ -98,6 +112,8 @@ class MainActivity : AppCompatActivity() {
     private val onnxClassificationSample by lazy { AiliaOnnxClassificationSample(modelDirectory) }
     private val u2netSample by lazy { AiliaU2NetSample(modelDirectory) }
     private val detrSample by lazy { AiliaDetrSample(modelDirectory) }
+    private val weSpeakerSample by lazy { AiliaWeSpeakerSample(modelDirectory) }
+    private val speakerProfileStore by lazy { SpeakerProfileStore(this) }
 
     // ObjectDetectionのONNXモデルとしてDETRを使うかどうか(falseならYOLOX)
     private var useDetr = false
@@ -140,6 +156,36 @@ class MainActivity : AppCompatActivity() {
     private var selectedLLMModelType: LLMModelType = LLMModelType.GEMMA_4_E2B
     private var isUpdatingSpeechOptionChecks = false
 
+    private data class SpeakerReference(
+        val name: String,
+        val embedding: FloatArray? = null,
+        val presetRawResource: Int? = null,
+    )
+
+    private enum class SpeakerRecordingPurpose { VERIFY, ENROLL }
+    private enum class PendingAudioAction { SPEECH, SPEAKER_VERIFY, SPEAKER_ENROLL }
+
+    private var speakerReferences = emptyList<SpeakerReference>()
+    private var presetSpeakerEmbedding: FloatArray? = null
+    private var selectedSpeakerWavUri: Uri? = null
+    private var speakerRecordingPurpose: SpeakerRecordingPurpose? = null
+    private var pendingAudioAction: PendingAudioAction? = null
+
+    private val speakerWavPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            selectedSpeakerWavUri = uri
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: SecurityException) {
+                // Some document providers grant access only for the current Activity lifetime.
+            }
+            if (::speakerSelectWavButton.isInitialized) {
+                speakerSelectWavButton.text = "Selected: ${uri.lastPathSegment ?: "Wav file"}"
+                speakerStatusTextView.text = "Status: Press Verify"
+            }
+        }
+    }
+
     // マイク録音のREC経過時間表示用
     private val recTimerHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var recStartMs: Long = 0
@@ -164,6 +210,7 @@ class MainActivity : AppCompatActivity() {
         TEXT_TO_SPEECH,
         LLM,
         MULTIMODAL_LLM,
+        SPEAKER_VERIFICATION,
     }
 
     companion object {
@@ -253,6 +300,17 @@ class MainActivity : AppCompatActivity() {
         modelSpinner = findViewById(R.id.modelSpinner)
         rootScrollView = findViewById(R.id.rootScrollView)
         visionRunButton = findViewById(R.id.visionRunButton)
+        speakerProfileLabel = findViewById(R.id.speakerProfileLabel)
+        speakerProfileSpinner = findViewById(R.id.speakerProfileSpinner)
+        speakerInputModeRadioGroup = findViewById(R.id.speakerInputModeRadioGroup)
+        speakerSelectWavButton = findViewById(R.id.speakerSelectWavButton)
+        speakerVerifyButton = findViewById(R.id.speakerVerifyButton)
+        speakerEnrollmentLabel = findViewById(R.id.speakerEnrollmentLabel)
+        speakerNameEditText = findViewById(R.id.speakerNameEditText)
+        speakerRegisterButton = findViewById(R.id.speakerRegisterButton)
+        speakerWaveformView = findViewById(R.id.speakerWaveformView)
+        speakerStatusTextView = findViewById(R.id.speakerStatusTextView)
+        speakerResultTextView = findViewById(R.id.speakerResultTextView)
     }
 
     private fun setupModeSelection() {
@@ -267,6 +325,7 @@ class MainActivity : AppCompatActivity() {
             "Text2Speech",
             "LLM",
             "MultimodalLLM",
+            "SpeakerVerification",
         )
 
         // 全体メニュー風の見た目にするため専用のitemレイアウト(白太字・中央寄せ)を使う
@@ -486,7 +545,9 @@ class MainActivity : AppCompatActivity() {
                 setupOnnxEnvSpinner(useBlas = false)
             }
 
-            AlgorithmType.SPEECH_TO_TEXT, AlgorithmType.TOKENIZE -> {
+            AlgorithmType.SPEECH_TO_TEXT,
+            AlgorithmType.SPEAKER_VERIFICATION,
+            AlgorithmType.TOKENIZE -> {
                 setupOnnxEnvSpinner(useBlas = true)
             }
 
@@ -601,6 +662,10 @@ class MainActivity : AppCompatActivity() {
                 LLMModelType.values().map { "${it.displayName} (Q4_K_M)" }.toTypedArray()
             }
             AlgorithmType.MULTIMODAL_LLM -> arrayOf("Gemma-3 4B IT (Q4_K_M)")
+            AlgorithmType.SPEAKER_VERIFICATION -> {
+                selectedRuntime = "ONNX"
+                arrayOf("WeSpeaker ResNet34 (VoxCeleb) + Silero VAD v6")
+            }
         }
 
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
@@ -867,6 +932,11 @@ class MainActivity : AppCompatActivity() {
                 // LLM modes are handled asynchronously via the send button
                 0
             }
+
+            AlgorithmType.SPEAKER_VERIFICATION -> {
+                // Speaker verification is handled asynchronously via its WAV/Mic controls.
+                0
+            }
         }
     }
 
@@ -906,6 +976,17 @@ class MainActivity : AppCompatActivity() {
         waveformInfoTextView,
         voiceWaveformView,
         voiceReplayButton,
+        speakerProfileLabel,
+        speakerProfileSpinner,
+        speakerInputModeRadioGroup,
+        speakerSelectWavButton,
+        speakerVerifyButton,
+        speakerEnrollmentLabel,
+        speakerNameEditText,
+        speakerRegisterButton,
+        speakerWaveformView,
+        speakerStatusTextView,
+        speakerResultTextView,
     )
 
     /** アルゴリズムごとに表示するView集合。共通レイアウトは同じ集合を共有する。 */
@@ -974,6 +1055,21 @@ class MainActivity : AppCompatActivity() {
             voiceWaveformView,
         )
 
+        val speakerVerificationViews = setOf<View>(
+            resultScrollView,
+            speakerProfileLabel,
+            speakerProfileSpinner,
+            speakerInputModeRadioGroup,
+            speakerSelectWavButton,
+            speakerVerifyButton,
+            speakerEnrollmentLabel,
+            speakerNameEditText,
+            speakerRegisterButton,
+            speakerWaveformView,
+            speakerStatusTextView,
+            speakerResultTextView,
+        )
+
         return mapOf(
             AlgorithmType.POSE_ESTIMATION to visionViews,
             AlgorithmType.OBJECT_DETECTION to visionViews,
@@ -985,6 +1081,7 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.TEXT_TO_SPEECH to voiceViews,
             AlgorithmType.LLM to llmViews,
             AlgorithmType.MULTIMODAL_LLM to multimodalViews,
+            AlgorithmType.SPEAKER_VERIFICATION to speakerVerificationViews,
         )
     }
 
@@ -1020,6 +1117,12 @@ class MainActivity : AppCompatActivity() {
                 voiceGenerateButton.isEnabled = true
                 voiceResultTextView.text = ""
                 voiceStatusTextView.text = "Status: Press Generate to synthesize"
+            }
+
+            AlgorithmType.SPEAKER_VERIFICATION -> {
+                speakerStatusTextView.text = "Status: Ready"
+                speakerResultTextView.text = "Distance: --"
+                updateSpeakerInputVisibility()
             }
 
             else -> Unit
@@ -1093,6 +1196,9 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.MULTIMODAL_LLM -> {
                 setupMultimodalLLMSendButton()
             }
+            AlgorithmType.SPEAKER_VERIFICATION -> {
+                setupSpeakerVerificationControls()
+            }
             else -> {}
         }
 
@@ -1114,6 +1220,7 @@ class MainActivity : AppCompatActivity() {
             miniLMv2Sample.release()
             trackerSample.releaseTracker()
             if (includeSpeech) speechSample.releaseSpeech()
+            if (includeSpeech) weSpeakerSample.release()
             voiceSample.releaseVoice()
             llmSample.release()
             multimodalLLMSample.release()
@@ -1364,6 +1471,11 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
+                AlgorithmType.SPEAKER_VERIFICATION -> {
+                    // モデルダウンロードはVerify/Register押下時まで遅延する
+                    return
+                }
+
                 AlgorithmType.TEXT_TO_SPEECH -> {
                     // モデルダウンロードはGenerate押下時(setupVoiceGenerateButton)まで遅延する
                     return
@@ -1469,6 +1581,15 @@ class MainActivity : AppCompatActivity() {
         diarizationCheckBox.isEnabled = enabled
         liveModeCheckBox.isEnabled = enabled && !diarizationCheckBox.isChecked
         visionRunButton.isEnabled = enabled
+        speakerProfileSpinner.isEnabled = enabled
+        speakerInputModeRadioGroup.isEnabled = enabled
+        for (index in 0 until speakerInputModeRadioGroup.childCount) {
+            speakerInputModeRadioGroup.getChildAt(index).isEnabled = enabled
+        }
+        speakerSelectWavButton.isEnabled = enabled
+        speakerVerifyButton.isEnabled = enabled
+        speakerNameEditText.isEnabled = enabled
+        speakerRegisterButton.isEnabled = enabled
     }
 
     private fun runOnUiThreadIfActive(action: () -> Unit) {
@@ -1971,6 +2092,311 @@ class MainActivity : AppCompatActivity() {
         transcriptTextView.text = ""
     }
 
+    private fun setupSpeakerVerificationControls() {
+        refreshSpeakerProfiles()
+        speakerInputModeRadioGroup.setOnCheckedChangeListener { _, _ ->
+            if (weSpeakerSample.isRecording) {
+                weSpeakerSample.cancelRecording()
+                resetSpeakerRecordingUi()
+            }
+            updateSpeakerInputVisibility()
+        }
+        speakerSelectWavButton.setOnClickListener {
+            speakerWavPicker.launch(arrayOf("audio/wav", "audio/x-wav", "audio/*"))
+        }
+        speakerVerifyButton.setOnClickListener {
+            if (weSpeakerSample.isRecording) {
+                if (speakerRecordingPurpose == SpeakerRecordingPurpose.VERIFY) {
+                    speakerStatusTextView.text = "Status: Separating speech with Silero VAD v6..."
+                    speakerVerifyButton.isEnabled = false
+                    weSpeakerSample.stopRecording()
+                }
+                return@setOnClickListener
+            }
+            if (isDownloadingModel.get()) return@setOnClickListener
+            if (speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerMicRadioButton) {
+                ensureWeSpeakerReady { startSpeakerRecording(SpeakerRecordingPurpose.VERIFY) }
+            } else {
+                ensureWeSpeakerReady { verifySelectedSpeakerWav() }
+            }
+        }
+        speakerRegisterButton.setOnClickListener {
+            if (weSpeakerSample.isRecording) {
+                if (speakerRecordingPurpose == SpeakerRecordingPurpose.ENROLL) {
+                    speakerStatusTextView.text = "Status: Separating speech with Silero VAD v6..."
+                    speakerRegisterButton.isEnabled = false
+                    weSpeakerSample.stopRecording()
+                }
+                return@setOnClickListener
+            }
+            if (isDownloadingModel.get()) return@setOnClickListener
+            ensureWeSpeakerReady { startSpeakerRecording(SpeakerRecordingPurpose.ENROLL) }
+        }
+        updateSpeakerInputVisibility()
+    }
+
+    private fun refreshSpeakerProfiles(selectProfileId: String? = null) {
+        val customProfiles = speakerProfileStore.list()
+        speakerReferences = listOf(
+            SpeakerReference(
+                name = "ailia-models 00001_spk1 (preset)",
+                embedding = presetSpeakerEmbedding,
+                presetRawResource = R.raw.wespeaker_00001_spk1,
+            )
+        ) + customProfiles.map { profile ->
+            SpeakerReference(profile.name, profile.embedding)
+        }
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            speakerReferences.map { it.name }.toTypedArray(),
+        )
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        speakerProfileSpinner.adapter = adapter
+        if (selectProfileId != null) {
+            val selectedProfile = customProfiles.indexOfFirst { it.id == selectProfileId }
+            if (selectedProfile >= 0) speakerProfileSpinner.setSelection(selectedProfile + 1)
+        }
+    }
+
+    private fun updateSpeakerInputVisibility() {
+        if (currentAlgorithm != AlgorithmType.SPEAKER_VERIFICATION) return
+        val wavMode = speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton
+        speakerSelectWavButton.visibility = if (wavMode) View.VISIBLE else View.GONE
+        if (!weSpeakerSample.isRecording) {
+            speakerVerifyButton.text = if (wavMode) "Verify Wav" else "Record and Verify"
+        }
+    }
+
+    private fun ensureWeSpeakerReady(onReady: () -> Unit) {
+        if (isInitialized) {
+            onReady()
+            return
+        }
+        val operationId = beginModelOperation() ?: return
+        val envId = selectedEnvId
+        speakerStatusTextView.text = "Status: Preparing WeSpeaker and Silero VAD v6..."
+        processingTimeTextView.text = "Processing Time: -- ms"
+        speechExecutor.execute {
+            try {
+                val downloaded = weSpeakerSample.downloadModel(object : ModelDownloadListener {
+                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                        runOnUiThreadIfActive {
+                            if (isCurrentOperation(operationId)) {
+                                speakerStatusTextView.text = "Status: Downloading $fileName"
+                                showModelDownloadProgress(bytesDownloaded, totalBytes)
+                            }
+                        }
+                    }
+
+                    override fun onComplete() = Unit
+
+                    override fun onError(error: String) {
+                        runOnUiThreadIfActive {
+                            if (isCurrentOperation(operationId)) speakerStatusTextView.text = "Status: $error"
+                        }
+                    }
+                })
+                val success = downloaded && weSpeakerSample.initialize(envId)
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    isInitialized = success
+                    hideModelDownloadProgress()
+                    finishModelOperation(operationId)
+                    if (success) {
+                        speakerStatusTextView.text = "Status: Ready"
+                        onReady()
+                    } else {
+                        speakerStatusTextView.text = "Status: Initialization failed"
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("AILIA_Main", "WeSpeaker download/init failed", e)
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    hideModelDownloadProgress()
+                    finishModelOperation(operationId)
+                    speakerStatusTextView.text = "Status: Error - ${e.message}"
+                }
+            }
+        }
+    }
+
+    private fun verifySelectedSpeakerWav() {
+        val audio = try {
+            val stream = selectedSpeakerWavUri?.let { contentResolver.openInputStream(it) }
+                ?: resources.openRawResource(R.raw.wespeaker_00024_spk1)
+            AudioUtil().loadRawAudio(stream)
+        } catch (e: Exception) {
+            speakerStatusTextView.text = "Status: WAV error - ${e.message}"
+            return
+        }
+        performSpeakerVerification(audio.audioData, audio.channels, audio.sampleRate)
+    }
+
+    private fun performSpeakerVerification(audio: FloatArray, channels: Int, sampleRate: Int) {
+        val reference = speakerReferences.getOrNull(speakerProfileSpinner.selectedItemPosition)
+        if (reference == null) {
+            speakerStatusTextView.text = "Status: Select a reference speaker"
+            return
+        }
+        val operationId = beginModelOperation() ?: return
+        speakerStatusTextView.text = "Status: Separating speech and comparing..."
+        speakerResultTextView.text = "Distance: --"
+        speechExecutor.execute {
+            try {
+                val referenceEmbedding = reference.embedding ?: loadPresetSpeakerEmbedding(reference)
+                val result = weSpeakerSample.verify(referenceEmbedding, audio, channels, sampleRate)
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    val verdict = if (result.metrics.isMatch) "MATCH" else "DIFFERENT"
+                    speakerResultTextView.text = String.format(
+                        Locale.ROOT,
+                        "Distance: %.4f\nCosine similarity: %.4f\nNormalized similarity: %.1f%%\nSpeech: %.2f s\nResult: %s",
+                        result.metrics.cosineDistance,
+                        result.metrics.cosineSimilarity,
+                        result.metrics.normalizedSimilarity * 100f,
+                        result.speechDurationMs / 1000f,
+                        verdict,
+                    )
+                    processingTimeTextView.text = "Processing Time: ${result.processingTimeMs} ms"
+                    speakerStatusTextView.text = "Status: Complete"
+                }
+            } catch (e: Exception) {
+                Log.e("AILIA_Main", "Speaker verification failed", e)
+                runOnUiThreadIfActive {
+                    if (isCurrentOperation(operationId)) {
+                        speakerStatusTextView.text = "Status: Error - ${e.message}"
+                    }
+                }
+            } finally {
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    finishModelOperation(operationId)
+                    updateSpeakerInputVisibility()
+                }
+            }
+        }
+    }
+
+    private fun loadPresetSpeakerEmbedding(reference: SpeakerReference): FloatArray {
+        presetSpeakerEmbedding?.let { return it }
+        val resource = reference.presetRawResource ?: error("Reference embedding is missing")
+        val wav = AudioUtil().loadRawAudio(resources.openRawResource(resource))
+        val embedding = weSpeakerSample.extractEmbedding(wav.audioData, wav.channels, wav.sampleRate).embedding
+        presetSpeakerEmbedding = embedding
+        return embedding
+    }
+
+    private fun startSpeakerRecording(purpose: SpeakerRecordingPurpose) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            pendingAudioAction = when (purpose) {
+                SpeakerRecordingPurpose.VERIFY -> PendingAudioAction.SPEAKER_VERIFY
+                SpeakerRecordingPurpose.ENROLL -> PendingAudioAction.SPEAKER_ENROLL
+            }
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                REQUEST_CODE_AUDIO_PERMISSION,
+            )
+            return
+        }
+        pendingAudioAction = null
+        speakerRecordingPurpose = purpose
+        speakerWaveformView.clear()
+        val started = weSpeakerSample.startRecording(object : AiliaWeSpeakerSample.RecordingListener {
+            override fun onWaveform(samples: FloatArray, sampleRate: Int) {
+                val blocks = WaveformView.peakBlocks(samples, samples.size, sampleRate)
+                runOnUiThreadIfActive { speakerWaveformView.push(blocks) }
+            }
+
+            override fun onCompleted(audio: FloatArray, sampleRate: Int) {
+                when (purpose) {
+                    SpeakerRecordingPurpose.VERIFY -> runOnUiThreadIfActive {
+                        resetSpeakerRecordingUi()
+                        performSpeakerVerification(audio, 1, sampleRate)
+                    }
+                    SpeakerRecordingPurpose.ENROLL -> {
+                        runOnUiThreadIfActive {
+                            val requestedName = speakerNameEditText.text.toString().trim()
+                            val name = requestedName.ifEmpty {
+                                "My Voice ${speakerProfileStore.list().size + 1}"
+                            }
+                            resetSpeakerRecordingUi()
+                            performSpeakerEnrollment(name, audio, sampleRate)
+                        }
+                    }
+                }
+            }
+
+            override fun onError(error: String) {
+                runOnUiThreadIfActive {
+                    resetSpeakerRecordingUi()
+                    speakerStatusTextView.text = "Status: Recording error - $error"
+                }
+            }
+        })
+        if (started) {
+            // Keep only the active Stop button enabled so a model/environment switch
+            // cannot release native objects while AudioRecord is still producing data.
+            setModelOperationControlsEnabled(false)
+            speakerStatusTextView.text = "Status: Recording (press Stop when finished)"
+            if (purpose == SpeakerRecordingPurpose.VERIFY) {
+                speakerVerifyButton.isEnabled = true
+                speakerVerifyButton.text = "Stop"
+            } else {
+                speakerRegisterButton.isEnabled = true
+                speakerRegisterButton.text = "Stop"
+            }
+        } else {
+            resetSpeakerRecordingUi()
+        }
+    }
+
+    private fun performSpeakerEnrollment(name: String, audio: FloatArray, sampleRate: Int) {
+        val operationId = beginModelOperation() ?: return
+        speakerStatusTextView.text = "Status: Separating speech and enrolling..."
+        speechExecutor.execute {
+            try {
+                val result = weSpeakerSample.extractEmbedding(audio, 1, sampleRate)
+                val profile = speakerProfileStore.save(name, result.embedding)
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    refreshSpeakerProfiles(profile.id)
+                    speakerNameEditText.setText("")
+                    speakerStatusTextView.text = "Status: Registered ${profile.name}"
+                    speakerResultTextView.text = String.format(
+                        Locale.ROOT,
+                        "Registered: %s\nSpeech: %.2f s",
+                        profile.name,
+                        result.speechDurationMs / 1000f,
+                    )
+                    processingTimeTextView.text = "Processing Time: ${result.processingTimeMs} ms"
+                }
+            } catch (e: Exception) {
+                Log.e("AILIA_Main", "Speaker enrollment failed", e)
+                runOnUiThreadIfActive {
+                    if (isCurrentOperation(operationId)) {
+                        speakerStatusTextView.text = "Status: Error - ${e.message}"
+                    }
+                }
+            } finally {
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    finishModelOperation(operationId)
+                    updateSpeakerInputVisibility()
+                }
+            }
+        }
+    }
+
+    private fun resetSpeakerRecordingUi() {
+        speakerRecordingPurpose = null
+        if (!isDownloadingModel.get()) setModelOperationControlsEnabled(true)
+        speakerRegisterButton.text = "Record and Register"
+        updateSpeakerInputVisibility()
+    }
+
     /**
      * Speechモデルを必要ならダウンロード+初期化してからonReadyをUIスレッドで呼ぶ。
      * モデルダウンロードはRun/Record押下時に初めて行う。
@@ -2105,9 +2531,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            pendingAudioAction = PendingAudioAction.SPEECH
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_CODE_AUDIO_PERMISSION)
             return
         }
+        pendingAudioAction = null
 
         val started = speechSample.startMicRecording(object : AiliaSpeechSample.MicRecordingListener {
             override fun onWaveform(samples: FloatArray, sampleRate: Int) {
@@ -2180,6 +2608,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processImageMode() {
+        if (currentAlgorithm == AlgorithmType.SPEAKER_VERIFICATION) {
+            return
+        }
+
         // Speech to Text uses speech model spinner and Wav/Mic mode
         // モデルダウンロードはRun/Record押下時まで遅延する
         if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
@@ -2390,7 +2822,8 @@ class MainActivity : AppCompatActivity() {
         override fun analyze(image: ImageProxy) {
             // Tokenizerは静止テキストに対する1ショット推論のみ。
             // 直前のアルゴリズムがCamera Modeでも解析ループへ流さない。
-            if (currentAlgorithm == AlgorithmType.TOKENIZE) {
+            if (currentAlgorithm == AlgorithmType.TOKENIZE ||
+                currentAlgorithm == AlgorithmType.SPEAKER_VERIFICATION) {
                 image.close()
                 return
             }
@@ -2521,10 +2954,20 @@ class MainActivity : AppCompatActivity() {
             } else {
                 Toast.makeText(this, "Camera permission was not granted.", Toast.LENGTH_SHORT).show()
             }
-            REQUEST_CODE_AUDIO_PERMISSION -> if (granted) {
-                startMicRecording()
-            } else {
-                Toast.makeText(this, "Microphone permission was not granted.", Toast.LENGTH_SHORT).show()
+            REQUEST_CODE_AUDIO_PERMISSION -> {
+                val action = pendingAudioAction
+                pendingAudioAction = null
+                if (granted) {
+                    when (action) {
+                        PendingAudioAction.SPEAKER_VERIFY ->
+                            startSpeakerRecording(SpeakerRecordingPurpose.VERIFY)
+                        PendingAudioAction.SPEAKER_ENROLL ->
+                            startSpeakerRecording(SpeakerRecordingPurpose.ENROLL)
+                        PendingAudioAction.SPEECH, null -> startMicRecording()
+                    }
+                } else {
+                    Toast.makeText(this, "Microphone permission was not granted.", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -2541,7 +2984,10 @@ class MainActivity : AppCompatActivity() {
 
         // Native objects are released after already queued work on the same executor.
         // This avoids destroying a model while its inference call is still running.
-        speechExecutor.execute { speechSample.releaseSpeech() }
+        speechExecutor.execute {
+            speechSample.releaseSpeech()
+            weSpeakerSample.release()
+        }
         speechExecutor.shutdown()
         cameraExecutor.execute { releaseCurrentAlgorithm(includeSpeech = false) }
         cameraExecutor.shutdown()
