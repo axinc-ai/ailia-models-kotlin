@@ -2242,6 +2242,11 @@ class MainActivity : AppCompatActivity() {
 
         if (!isProcessing.compareAndSet(false, true)) return
         val tokenizerInput = tokenizerInputEditText.text.toString()
+        if (currentAlgorithm == AlgorithmType.TOKENIZE) {
+            // Tokenizerは1回のRunにつき1回だけ実行する。初期化完了後にここへ
+            // 到達した時点で要求を消費し、別のUI更新から再実行されないようにする。
+            resetRunState()
+        }
         setModelOperationControlsEnabled(false)
         cameraExecutor.execute { runImageModeInference(tokenizerInput) }
     }
@@ -2363,6 +2368,12 @@ class MainActivity : AppCompatActivity() {
 
     private inner class CameraFrameAnalyzer : ImageAnalysis.Analyzer {
         override fun analyze(image: ImageProxy) {
+            // Tokenizerは静止テキストに対する1ショット推論のみ。
+            // 直前のアルゴリズムがCamera Modeでも解析ループへ流さない。
+            if (currentAlgorithm == AlgorithmType.TOKENIZE) {
+                image.close()
+                return
+            }
             // MultimodalLLMはプレビュー表示とフレーム保持のみ行う(推論はSend押下時)
             if (currentAlgorithm == AlgorithmType.MULTIMODAL_LLM) {
                 processCameraFrame(image)
