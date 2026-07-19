@@ -44,6 +44,7 @@ class AiliaTrackerSample {
         } finally {
             tracker = null
             isInitialized = false
+            lastTrackingResult = ""
             trajectoryPoints.clear()
             Log.i(TAG, "Tracker released")
         }
@@ -103,6 +104,10 @@ class AiliaTrackerSample {
                         
                         // Generate color based on ID
                         val trajectoryColor = generateColorForId(it.id)
+                        val left = (w * it.x).coerceIn(0f, w.toFloat())
+                        val top = (h * it.y).coerceIn(0f, h.toFloat())
+                        val right = (w * (it.x + it.w)).coerceIn(0f, w.toFloat())
+                        val bottom = (h * (it.y + it.h)).coerceIn(0f, h.toFloat())
                         
                         // Draw trajectory lines
                         if (trajectoryList.size > 1) {
@@ -125,21 +130,53 @@ class AiliaTrackerSample {
                         }
                         
                         // Draw bounding box
+                        val boxPaint = Paint(paint).apply {
+                            color = trajectoryColor
+                            style = Paint.Style.STROKE
+                            strokeWidth = maxOf(paint.strokeWidth, 5f)
+                            isAntiAlias = true
+                        }
                         canvas.drawRect(
-                            (w * it.x).toFloat(),
-                            (h * it.y).toFloat(),
-                            (w * (it.x + it.w)).toFloat(),
-                            (h * (it.y + it.h)).toFloat(),
-                            paint
+                            left,
+                            top,
+                            right,
+                            bottom,
+                            boxPaint
                         )
                         
-                        // Draw tracking ID
+                        // Draw tracking ID on the same high-visibility color as the box.
+                        val label = "ID:${it.id}"
                         val textPaint = Paint().apply {
-                            color = android.graphics.Color.WHITE
+                            color = Color.WHITE
                             textSize = 24f
                             isAntiAlias = true
                         }
-                        canvas.drawText("ID:${it.id}", (w * it.x).toFloat(), (h * it.y).toFloat() - 5, textPaint)
+                        val labelPadding = 6f
+                        val labelHeight = textPaint.fontMetrics.run { bottom - top }
+                        val labelTop = if (top >= labelHeight + labelPadding * 2) {
+                            top - labelHeight - labelPadding * 2
+                        } else {
+                            top
+                        }
+                        val labelRight = (left + textPaint.measureText(label) + labelPadding * 2)
+                            .coerceAtMost(w.toFloat())
+                        val labelPaint = Paint().apply {
+                            color = trajectoryColor
+                            style = Paint.Style.FILL
+                        }
+                        canvas.drawRect(
+                            left,
+                            labelTop,
+                            labelRight,
+                            labelTop + labelHeight + labelPadding * 2,
+                            labelPaint
+                        )
+                        canvas.drawText(
+                            label,
+                            left + labelPadding,
+                            labelTop + labelPadding - textPaint.fontMetrics.top,
+                            textPaint
+                        )
                     }
                 }
                 lastTrackingResult = trackingInfo

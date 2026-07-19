@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var algorithmSpinner: Spinner
     private lateinit var envSpinner: Spinner
     private lateinit var processingTimeTextView: TextView
+    private lateinit var modelDownloadProgressBar: ProgressBar
     private lateinit var resultScrollView: ScrollView
     private lateinit var classificationResultTextView: TextView
     private lateinit var tokenizerInputLabel: TextView
@@ -131,6 +132,7 @@ class MainActivity : AppCompatActivity() {
     private var selectedSpeechModelType: SpeechModelType = SpeechModelType.SENSEVOICE_SMALL
     private var selectedSpeechLanguage: String = "ja"
     private var selectedLLMModelType: LLMModelType = LLMModelType.GEMMA_4_E2B
+    private var isUpdatingSpeechOptionChecks = false
 
     // マイク録音のREC経過時間表示用
     private val recTimerHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -227,6 +229,7 @@ class MainActivity : AppCompatActivity() {
         algorithmSpinner = findViewById(R.id.algorithmSpinner)
         envSpinner = findViewById(R.id.envSpinner)
         processingTimeTextView = findViewById(R.id.processingTimeTextView)
+        modelDownloadProgressBar = findViewById(R.id.modelDownloadProgressBar)
         resultScrollView = findViewById(R.id.resultScrollView)
         classificationResultTextView = findViewById(R.id.classificationResultTextView)
         tokenizerInputLabel = findViewById(R.id.tokenizerInputLabel)
@@ -360,6 +363,24 @@ class MainActivity : AppCompatActivity() {
     private fun resetRunState() {
         runRequested = false
         visionRunButton.text = "Run"
+    }
+
+    /** モデル変更前の推論結果を消し、現在の入力表示へ戻す。 */
+    private fun resetVisionDisplayForModelChange() {
+        latestCameraBitmap = null
+        processingTimeTextView.text = "Processing Time: -- ms"
+        classificationResultTextView.text = "Classification Result: --"
+        trackingResultTextView.text = "Tracking Results: --"
+
+        if (modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton) {
+            // ImageViewはPreviewViewより手前にあるため、前モデルの最終フレームを消す。
+            imageView.setImageDrawable(null)
+        } else if (currentAlgorithm != AlgorithmType.TOKENIZE) {
+            val options = Options().apply { inScaled = false }
+            imageView.setImageBitmap(
+                BitmapFactory.decodeResource(resources, R.raw.person, options)
+            )
+        }
     }
 
     private fun setupVisionRunButton() {
@@ -610,6 +631,7 @@ class MainActivity : AppCompatActivity() {
                     isInitialized = false
                     isDownloadingModel.set(false)
                     resetRunState()
+                    resetVisionDisplayForModelChange()
                     val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
                     if (isImageMode) {
                         releaseCurrentAlgorithm()
@@ -629,6 +651,7 @@ class MainActivity : AppCompatActivity() {
                     isInitialized = false
                     isDownloadingModel.set(false)
                     resetRunState()
+                    resetVisionDisplayForModelChange()
                     val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
                     if (isImageMode) {
                         releaseCurrentAlgorithm()
@@ -654,6 +677,7 @@ class MainActivity : AppCompatActivity() {
                     isInitialized = false
                     isDownloadingModel.set(false)
                     resetRunState()
+                    resetVisionDisplayForModelChange()
                     val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
                     if (isImageMode) {
                         releaseCurrentAlgorithm()
@@ -689,7 +713,7 @@ class MainActivity : AppCompatActivity() {
                     voiceReplayButton.visibility = View.GONE
                     voiceResultTextView.text = ""
                     voiceInputEditText.setText(newType.defaultText)
-                    voiceStatusTextView.text = "Status: Press Generate to download model and synthesize"
+                    voiceStatusTextView.text = "Status: Press Generate to synthesize"
                 }
             }
             AlgorithmType.LLM -> {
@@ -701,7 +725,7 @@ class MainActivity : AppCompatActivity() {
                     isInitialized = false
                     llmChatContainer.removeAllViews()
                     llmSendButton.isEnabled = true
-                    llmStatusTextView.text = "Status: Press Send to download model and run"
+                    llmStatusTextView.text = "Status: Press Send to run"
                 }
             }
             else -> {}
@@ -967,14 +991,14 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.LLM -> {
                 llmInputEditText.setText("Hello!")
                 llmChatContainer.removeAllViews()
-                llmStatusTextView.text = "Status: Press Send to download model and run"
+                llmStatusTextView.text = "Status: Press Send to run"
                 llmSendButton.isEnabled = true
             }
 
             AlgorithmType.MULTIMODAL_LLM -> {
                 llmInputEditText.setText("What is in this image?")
                 llmChatContainer.removeAllViews()
-                llmStatusTextView.text = "Status: Press Send to download model and run"
+                llmStatusTextView.text = "Status: Press Send to run"
                 llmSendButton.isEnabled = true
             }
 
@@ -982,8 +1006,7 @@ class MainActivity : AppCompatActivity() {
                 voiceWaveformView.clear()
                 voiceGenerateButton.isEnabled = true
                 voiceResultTextView.text = ""
-                voiceStatusTextView.text =
-                    "Status: Press Generate to download model and synthesize"
+                voiceStatusTextView.text = "Status: Press Generate to synthesize"
             }
 
             else -> Unit
@@ -1026,6 +1049,7 @@ class MainActivity : AppCompatActivity() {
         resetRunState()
         // アルゴリズム切り替え時にProcessing Timeと波形表示をリセット
         processingTimeTextView.text = "Processing Time: -- ms"
+        hideModelDownloadProgress()
         waveformView.clear()
         voiceWaveformView.clear()
         waveformInfoTextView.text = ""
@@ -1133,9 +1157,6 @@ class MainActivity : AppCompatActivity() {
      */
     private fun initializeDownloadedModelAsync(
         logName: String,
-        downloadingMessage: String,
-        readyMessage: String,
-        initializationErrorMessage: String,
         download: (ModelDownloadListener) -> Boolean,
         initialize: () -> Boolean,
         onReady: () -> Unit = {
@@ -1145,7 +1166,7 @@ class MainActivity : AppCompatActivity() {
         }
     ) {
         if (!isDownloadingModel.compareAndSet(false, true)) return
-        processingTimeTextView.text = downloadingMessage
+        processingTimeTextView.text = "Processing Time: -- ms"
         Log.i("AILIA_Main", "$logName: submitting download/init task")
 
         cameraExecutor.execute {
@@ -1156,13 +1177,9 @@ class MainActivity : AppCompatActivity() {
                         bytesDownloaded: Long,
                         totalBytes: Long
                     ) {
-                        val percent = if (totalBytes > 0) {
-                            bytesDownloaded * 100 / totalBytes
-                        } else {
-                            0
-                        }
+                        Log.d("AILIA_Main", "$logName: downloading $fileName")
                         runOnUiThread {
-                            processingTimeTextView.text = "Downloading $fileName... $percent%"
+                            showModelDownloadProgress(bytesDownloaded, totalBytes)
                         }
                     }
 
@@ -1171,6 +1188,7 @@ class MainActivity : AppCompatActivity() {
                     override fun onError(error: String) {
                         runOnUiThread {
                             processingTimeTextView.text = "Download error: $error"
+                            hideModelDownloadProgress()
                         }
                     }
                 })
@@ -1183,10 +1201,10 @@ class MainActivity : AppCompatActivity() {
                 isDownloadingModel.set(false)
                 runOnUiThread {
                     if (success) {
-                        processingTimeTextView.text = readyMessage
+                        processingTimeTextView.text = "Processing Time: -- ms"
                         onReady()
                     } else {
-                        processingTimeTextView.text = initializationErrorMessage
+                        processingTimeTextView.text = "Initialization failed"
                     }
                 }
             } catch (e: Exception) {
@@ -1196,6 +1214,9 @@ class MainActivity : AppCompatActivity() {
                 }
             } finally {
                 isDownloadingModel.set(false)
+                runOnUiThread {
+                    hideModelDownloadProgress()
+                }
             }
         }
     }
@@ -1214,9 +1235,6 @@ class MainActivity : AppCompatActivity() {
                     if (selectedRuntime == "ONNX" && useDetr) {
                         initializeDownloadedModelAsync(
                             logName = "DETR",
-                            downloadingMessage = "Downloading DETR model...",
-                            readyMessage = "DETR model ready",
-                            initializationErrorMessage = "Failed to initialize DETR",
                             download = { detrSample.downloadModel(it) },
                             initialize = { detrSample.initialize(selectedEnvId) }
                         )
@@ -1224,9 +1242,6 @@ class MainActivity : AppCompatActivity() {
                     } else if (selectedRuntime == "ONNX") {
                         initializeDownloadedModelAsync(
                             logName = "ONNX ObjDet",
-                            downloadingMessage = "Downloading ONNX model...",
-                            readyMessage = "ONNX model ready",
-                            initializationErrorMessage = "Failed to initialize ONNX model",
                             download = { onnxObjectDetectionSample.downloadModel(it) },
                             initialize = {
                                 onnxObjectDetectionSample.initializeObjectDetection(selectedEnvId)
@@ -1247,9 +1262,6 @@ class MainActivity : AppCompatActivity() {
                     if (selectedRuntime == "ONNX") {
                         initializeDownloadedModelAsync(
                             logName = "ONNX Classification",
-                            downloadingMessage = "Downloading ONNX model...",
-                            readyMessage = "ONNX model ready",
-                            initializationErrorMessage = "Failed to initialize ONNX model",
                             download = { onnxClassificationSample.downloadModel(it) },
                             initialize = {
                                 onnxClassificationSample.initializeClassification(selectedEnvId)
@@ -1259,9 +1271,6 @@ class MainActivity : AppCompatActivity() {
                     } else if (classificationSample.modelType == TFLiteClassificationModelType.RESNET50) {
                         initializeDownloadedModelAsync(
                             logName = "TFLite ResNet50",
-                            downloadingMessage = "Downloading TFLite model...",
-                            readyMessage = "TFLite model ready",
-                            initializationErrorMessage = "Failed to initialize TFLite model",
                             download = { classificationSample.downloadModel(it) },
                             initialize = {
                                 classificationSample.initializeFromFile(env = selectedEnvId)
@@ -1280,9 +1289,6 @@ class MainActivity : AppCompatActivity() {
                 AlgorithmType.TOKENIZE -> {
                     initializeDownloadedModelAsync(
                         logName = "MiniLMv2",
-                        downloadingMessage = "Downloading MiniLMv2 model...",
-                        readyMessage = "MiniLMv2 ready",
-                        initializationErrorMessage = "Failed to initialize MiniLMv2",
                         download = { miniLMv2Sample.downloadModel(it) },
                         initialize = { miniLMv2Sample.initialize(selectedEnvId) },
                         onReady = { processImageMode() }
@@ -1294,9 +1300,6 @@ class MainActivity : AppCompatActivity() {
                     if (selectedRuntime == "ONNX") {
                         initializeDownloadedModelAsync(
                             logName = "ONNX Tracking",
-                            downloadingMessage = "Downloading ONNX model...",
-                            readyMessage = "ONNX model ready",
-                            initializationErrorMessage = "Failed to initialize ONNX tracking",
                             download = { onnxObjectDetectionSample.downloadModel(it) },
                             initialize = {
                                 val detectorSuccess =
@@ -1321,9 +1324,6 @@ class MainActivity : AppCompatActivity() {
                 AlgorithmType.BACKGROUND_REMOVAL -> {
                     initializeDownloadedModelAsync(
                         logName = "U2Net",
-                        downloadingMessage = "Downloading U-2-Net model...",
-                        readyMessage = "U-2-Net model ready",
-                        initializationErrorMessage = "Failed to initialize U-2-Net",
                         download = { u2netSample.downloadModel(it) },
                         initialize = { u2netSample.initialize(selectedEnvId) }
                     )
@@ -1385,9 +1385,28 @@ class MainActivity : AppCompatActivity() {
         rootScrollView.post { rootScrollView.fullScroll(View.FOCUS_DOWN) }
     }
 
+    /** モデルダウンロードの進捗を画面下部の共通ProgressBarへ表示する。 */
+    private fun showModelDownloadProgress(bytesDownloaded: Long = 0, totalBytes: Long = 0) {
+        modelDownloadProgressBar.visibility = View.VISIBLE
+        if (totalBytes > 0) {
+            modelDownloadProgressBar.isIndeterminate = false
+            modelDownloadProgressBar.progress =
+                ((bytesDownloaded * 100 / totalBytes).coerceIn(0, 100)).toInt()
+        } else {
+            modelDownloadProgressBar.isIndeterminate = true
+        }
+    }
+
+    private fun hideModelDownloadProgress() {
+        modelDownloadProgressBar.visibility = View.GONE
+        modelDownloadProgressBar.isIndeterminate = false
+        modelDownloadProgressBar.progress = 0
+    }
+
     /** LLMモデルをダウンロード+初期化し、成功時にonReadyをUIスレッドで呼ぶ */
     private fun initializeLLMAsync(onReady: (() -> Unit)? = null) {
-        llmStatusTextView.text = "Status: Downloading model..."
+        llmStatusTextView.text = "Status: Initializing..."
+        processingTimeTextView.text = "Processing Time: -- ms"
         llmSendButton.isEnabled = false
         algorithmSpinner.isEnabled = false
         llmSample.modelType = selectedLLMModelType
@@ -1397,6 +1416,7 @@ class MainActivity : AppCompatActivity() {
                     val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
                     runOnUiThread {
                         llmStatusTextView.text = "Status: Downloading model... $percent%"
+                        showModelDownloadProgress(bytesDownloaded, totalBytes)
                     }
                 }
                 override fun onComplete(file: java.io.File) {
@@ -1405,12 +1425,14 @@ class MainActivity : AppCompatActivity() {
                 override fun onError(error: String) {
                     runOnUiThread {
                         llmStatusTextView.text = "Status: Download error - $error"
+                        hideModelDownloadProgress()
                     }
                 }
             })
             runOnUiThread {
                 isInitialized = success
                 algorithmSpinner.isEnabled = true
+                hideModelDownloadProgress()
                 if (success) {
                     llmStatusTextView.text = "Status: Ready"
                     llmSendButton.isEnabled = true
@@ -1472,7 +1494,7 @@ class MainActivity : AppCompatActivity() {
                 llmSendButton.isEnabled = true
                 algorithmSpinner.isEnabled = true
                 if (processingTime > 0) {
-                    processingTimeTextView.text = "Processing Time: ${processingTime}ms (LLM)"
+                    processingTimeTextView.text = "Processing Time: ${processingTime}ms"
                 }
             }
         }
@@ -1480,7 +1502,8 @@ class MainActivity : AppCompatActivity() {
 
     /** MultimodalLLMモデルをダウンロード+初期化し、成功時にonReadyをUIスレッドで呼ぶ */
     private fun initializeMultimodalAsync(onReady: (() -> Unit)? = null) {
-        llmStatusTextView.text = "Status: Downloading model..."
+        llmStatusTextView.text = "Status: Initializing..."
+        processingTimeTextView.text = "Processing Time: -- ms"
         llmSendButton.isEnabled = false
         algorithmSpinner.isEnabled = false
         cameraExecutor.execute {
@@ -1489,6 +1512,7 @@ class MainActivity : AppCompatActivity() {
                     val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
                     runOnUiThread {
                         llmStatusTextView.text = "Status: Downloading $fileName... $percent%"
+                        showModelDownloadProgress(bytesDownloaded, totalBytes)
                     }
                 }
                 override fun onStatus(status: String) {}
@@ -1497,6 +1521,7 @@ class MainActivity : AppCompatActivity() {
                 override fun onError(error: String) {
                     runOnUiThread {
                         llmStatusTextView.text = "Status: Error - $error"
+                        hideModelDownloadProgress()
                     }
                 }
             })
@@ -1504,6 +1529,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 isInitialized = success
                 algorithmSpinner.isEnabled = true
+                hideModelDownloadProgress()
                 if (success) {
                     llmStatusTextView.text = "Status: Ready"
                     llmSendButton.isEnabled = true
@@ -1592,7 +1618,7 @@ class MainActivity : AppCompatActivity() {
                         modeRadioGroup.getChildAt(i).isEnabled = true
                     }
                     if (processingTime > 0) {
-                        processingTimeTextView.text = "Processing Time: ${processingTime}ms (MultimodalLLM)"
+                        processingTimeTextView.text = "Processing Time: ${processingTime}ms"
                     }
                 }
             }
@@ -1629,7 +1655,10 @@ class MainActivity : AppCompatActivity() {
             voiceResultTextView.text = ""
             voiceWaveformView.clear()
             voiceStatusTextView.text =
-                if (isInitialized) "Status: Generating..." else "Status: Downloading model..."
+                if (isInitialized) "Status: Generating..." else "Status: Initializing..."
+            if (!isInitialized) {
+                processingTimeTextView.text = "Processing Time: -- ms"
+            }
 
             cameraExecutor.execute {
                 // モデルダウンロード+初期化はGenerate押下時に行う
@@ -1640,6 +1669,7 @@ class MainActivity : AppCompatActivity() {
                             val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
                             runOnUiThread {
                                 voiceStatusTextView.text = "Status: Downloading $fileName... $percent%"
+                                showModelDownloadProgress(bytesDownloaded, totalBytes)
                             }
                         }
                         override fun onComplete() {
@@ -1648,6 +1678,7 @@ class MainActivity : AppCompatActivity() {
                         override fun onError(error: String) {
                             runOnUiThread {
                                 voiceStatusTextView.text = "Status: Error - $error"
+                                hideModelDownloadProgress()
                             }
                         }
                     })
@@ -1656,11 +1687,13 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread {
                             voiceGenerateButton.isEnabled = true
                             voiceStatusTextView.text = "Status: Initialization failed"
+                            hideModelDownloadProgress()
                         }
                         return@execute
                     }
                     runOnUiThread {
                         voiceStatusTextView.text = "Status: Generating..."
+                        hideModelDownloadProgress()
                     }
                 }
 
@@ -1681,7 +1714,7 @@ class MainActivity : AppCompatActivity() {
                     voiceStatusTextView.text = "Status: Complete"
                     voiceResultTextView.text = "${selectedVoiceModelType.displayName} Generated"
                     if (inferenceTime > 0) {
-                        processingTimeTextView.text = "Processing Time: ${inferenceTime}ms (Voice)"
+                        processingTimeTextView.text = "Processing Time: ${inferenceTime}ms"
                     }
                     // 合成音声の波形を再生位置に追従して表示する
                     voiceSample.lastAudioData?.let { audio ->
@@ -1767,28 +1800,44 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupDiarizationCheckBox() {
+        speechSample.diarizationEnabled = diarizationCheckBox.isChecked
+        updateLiveModeAvailability(diarizationCheckBox.isChecked)
         diarizationCheckBox.setOnCheckedChangeListener { _, isChecked ->
             speechSample.diarizationEnabled = isChecked
-            // 設定変更のため要再初期化(ダウンロードはRun/Record押下時)
-            stopMicRecording(finalize = false)
-            speechSample.releaseSpeech()
-            isInitialized = false
-            isDownloadingModel.set(false)
-            clearTranscript()
-            classificationResultTextView.text = "Speech Result: --"
+            updateLiveModeAvailability(isChecked)
+            resetSpeechForOptionChange()
         }
     }
 
     private fun setupLiveModeCheckBox() {
         liveModeCheckBox.setOnCheckedChangeListener { _, _ ->
-            // LIVEフラグ変更のため要再初期化(ダウンロードはRun/Record押下時)
-            stopMicRecording(finalize = false)
-            speechSample.releaseSpeech()
-            isInitialized = false
-            isDownloadingModel.set(false)
-            clearTranscript()
-            classificationResultTextView.text = "Speech Result: --"
+            if (!isUpdatingSpeechOptionChecks) {
+                resetSpeechForOptionChange()
+            }
         }
+    }
+
+    /** Speaker Diarizationと併用できないLive ModeをOFFにして選択不可にする。 */
+    private fun updateLiveModeAvailability(diarizationEnabled: Boolean) {
+        isUpdatingSpeechOptionChecks = true
+        try {
+            if (diarizationEnabled) {
+                liveModeCheckBox.isChecked = false
+            }
+            liveModeCheckBox.isEnabled = !diarizationEnabled
+        } finally {
+            isUpdatingSpeechOptionChecks = false
+        }
+    }
+
+    /** 音声認識オプション変更後、次回のRun/Recordで設定を反映する。 */
+    private fun resetSpeechForOptionChange() {
+        stopMicRecording(finalize = false)
+        speechSample.releaseSpeech()
+        isInitialized = false
+        isDownloadingModel.set(false)
+        clearTranscript()
+        classificationResultTextView.text = "Speech Result: --"
     }
 
     /** 議事録風トランスクリプトに行を追記して表示を更新する(UIスレッドで呼ぶこと) */
@@ -1832,22 +1881,23 @@ class MainActivity : AppCompatActivity() {
         val isMicMode = speechModeRadioGroup.checkedRadioButtonId == R.id.micRadioButton
         // LIVEフラグはLive Modeチェックボックスで有効化(マイクモード時のみ)
         val liveMode = isMicMode && liveModeCheckBox.isChecked
-        processingTimeTextView.text = "Downloading speech model (${selectedSpeechModelType.displayName})..."
+        processingTimeTextView.text = "Processing Time: -- ms"
         speechRunButton.isEnabled = false
         micRecordButton.isEnabled = false
         speechExecutor.execute {
             try {
                 val downloaded = speechSample.downloadModel(selectedSpeechModelType, object : ModelDownloadListener {
                     override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                        val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
+                        Log.d("AILIA_Main", "Speech: downloading $fileName")
                         runOnUiThread {
-                            processingTimeTextView.text = "Downloading $fileName... $percent%"
+                            showModelDownloadProgress(bytesDownloaded, totalBytes)
                         }
                     }
                     override fun onComplete() {}
                     override fun onError(error: String) {
                         runOnUiThread {
                             processingTimeTextView.text = "Download error: $error"
+                            hideModelDownloadProgress()
                         }
                     }
                 })
@@ -1864,8 +1914,9 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     speechRunButton.isEnabled = true
                     micRecordButton.isEnabled = true
+                    hideModelDownloadProgress()
                     if (success) {
-                        processingTimeTextView.text = "${selectedSpeechModelType.displayName} ready"
+                        processingTimeTextView.text = "Processing Time: -- ms"
                         onReady()
                     } else {
                         processingTimeTextView.text = "Failed to initialize speech model"
@@ -1877,6 +1928,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     speechRunButton.isEnabled = true
                     micRecordButton.isEnabled = true
+                    hideModelDownloadProgress()
                     processingTimeTextView.text = "Error: ${e.message}"
                 }
             }
@@ -2112,7 +2164,7 @@ class MainActivity : AppCompatActivity() {
 
             if (!isInitialized) {
                 runOnUiThread {
-                    processingTimeTextView.text = "Failed to initialize ${currentAlgorithm.name}"
+                    processingTimeTextView.text = "Initialization failed"
                 }
                 return
             }
@@ -2151,7 +2203,7 @@ class MainActivity : AppCompatActivity() {
                 if (currentAlgorithm != AlgorithmType.TOKENIZE) {
                     imageView.setImageBitmap(bitmap)
                 }
-                var timeText = "Processing Time: ${processingTime}ms (${currentAlgorithm.name})"
+                var timeText = "Processing Time: ${processingTime}ms"
                 when (currentAlgorithm) {
                     AlgorithmType.CLASSIFICATION -> {
                         val result = if (selectedRuntime == "ONNX") onnxClassificationSample.getLastClassificationResult() else classificationSample.getLastClassificationResult()
@@ -2303,7 +2355,7 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     val fps = if (processingTime > 0) 1000 / processingTime else 0
-                    var timeText = "Processing Time: ${processingTime}ms (${currentAlgorithm.name}) - FPS: $fps"
+                    var timeText = "Processing Time: ${processingTime}ms - FPS: $fps"
                     when (currentAlgorithm) {
                         AlgorithmType.CLASSIFICATION -> {
                             val result = if (selectedRuntime == "ONNX") onnxClassificationSample.getLastClassificationResult() else classificationSample.getLastClassificationResult()
