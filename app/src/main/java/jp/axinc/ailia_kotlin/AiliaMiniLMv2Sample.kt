@@ -5,9 +5,7 @@ import axip.ailia.Ailia
 import axip.ailia.AiliaModel
 import axip.ailia_tokenizer.AiliaTokenizer
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.Locale
 
 /**
  * MiniLMv2 zero-shot classification sample using ailia Tokenizer + ailia SDK.
@@ -17,16 +15,11 @@ import java.net.URL
  * 2. Run ONNX inference with ailia SDK
  * 3. Apply softmax to entailment logits for classification scores
  */
-class AiliaMiniLMv2Sample {
-
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
+class AiliaMiniLMv2Sample(private val modelDirectory: File) {
 
     companion object {
         private const val TAG = "AILIA_Main"
+        init { System.loadLibrary("ailia") }
         private const val MODEL_URL = "https://storage.googleapis.com/ailia-models/multilingual-minilmv2/minilm_l12.onnx"
         private const val MODEL_FILE = "minilm_l12.onnx"
         private const val PROTO_URL = "https://storage.googleapis.com/ailia-models/multilingual-minilmv2/minilm_l12.onnx.prototxt"
@@ -42,58 +35,20 @@ class AiliaMiniLMv2Sample {
         private const val MAX_LENGTH = 128
     }
 
-    var modelDir: String = ""
     private var tokenizer: AiliaTokenizer? = null
     private var model: AiliaModel? = null
     private var isInitialized = false
     private var lastResult: String = ""
 
-    private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): Boolean {
-        val dir = modelDir
-        val path = "$dir/$fileName"
-        val file = File(path)
-        if (file.exists()) {
-            if (file.canRead()) {
-                Log.i(TAG, "Model file already exists and readable: $path (${file.length()} bytes)")
-                return true
-            } else {
-                Log.w(TAG, "Model file exists but not readable, re-downloading: $path")
-                file.delete()
-            }
-        }
-        File(path).parentFile?.mkdirs()
-        val tmpFile = File("$path.tmp")
-        val url = URL(urlStr)
-        val connection = url.openConnection() as HttpURLConnection
-        connection.connectTimeout = 30000
-        connection.readTimeout = 60000
-        connection.connect()
-        val totalBytes = connection.contentLengthLong
-        connection.inputStream.use { input ->
-            FileOutputStream(tmpFile).use { output ->
-                val buffer = ByteArray(8192)
-                var bytesDownloaded: Long = 0
-                var bytesRead: Int
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    output.write(buffer, 0, bytesRead)
-                    bytesDownloaded += bytesRead
-                    listener?.onProgress(fileName, bytesDownloaded, totalBytes)
-                }
-            }
-        }
-        tmpFile.renameTo(File(path))
-        return true
-    }
-
     /**
      * Downloads all required model files (ONNX model, prototxt, sentencepiece tokenizer).
      */
-    fun downloadModel(listener: DownloadListener? = null): Boolean {
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
         return try {
             Log.i(TAG, "Starting MiniLMv2 model download/check...")
-            downloadFile(PROTO_URL, PROTO_FILE, listener)
-            downloadFile(TOKENIZER_URL, TOKENIZER_FILE, listener)
-            downloadFile(MODEL_URL, MODEL_FILE, listener)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(PROTO_URL, PROTO_FILE), listener) != null)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(TOKENIZER_URL, TOKENIZER_FILE), listener) != null)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(MODEL_URL, MODEL_FILE), listener) != null)
             listener?.onComplete()
             Log.i(TAG, "MiniLMv2 model download/check complete")
             true
@@ -113,10 +68,9 @@ class AiliaMiniLMv2Sample {
         }
 
         return try {
-            val dir = modelDir
-            val tokenizerPath = "$dir/$TOKENIZER_FILE"
-            val protoPath = "$dir/$PROTO_FILE"
-            val modelPath = "$dir/$MODEL_FILE"
+            val tokenizerPath = File(modelDirectory, TOKENIZER_FILE).absolutePath
+            val protoPath = File(modelDirectory, PROTO_FILE).absolutePath
+            val modelPath = File(modelDirectory, MODEL_FILE).absolutePath
 
             // Initialize tokenizer
             tokenizer = AiliaTokenizer(AiliaTokenizer.AILIA_TOKENIZER_TYPE_XLM_ROBERTA)
@@ -213,7 +167,7 @@ class AiliaMiniLMv2Sample {
             val results = labels.zip(scores.toList())
                 .sortedByDescending { it.second }
                 .joinToString("\n") { (label, score) ->
-                    "$label: ${"%.1f".format(score * 100)}%"
+                    "$label: ${String.format(Locale.ROOT, "%.1f", score * 100)}%"
                 }
 
             lastResult = results
@@ -249,7 +203,7 @@ class AiliaMiniLMv2Sample {
         inputIds[pos++] = SEP_TOKEN
         inputIds[pos++] = SEP_TOKEN
         for (t in hypoTokens) inputIds[pos++] = t
-        inputIds[pos++] = SEP_TOKEN
+        inputIds[pos] = SEP_TOKEN
 
         return Pair(inputIds, attentionMask)
     }

@@ -1,22 +1,63 @@
 package jp.axinc.ailia_kotlin
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Paint
 import android.util.Log
-import android.widget.ImageView
 import axip.ailia_tflite.AiliaTFLite
 import java.io.File
-import kotlin.math.exp
-import kotlin.math.pow
 
-class AiliaTFLiteClassificationSample {
+/**
+ * TFLiteの画像分類モデル定義。
+ * modelUrlがnullの場合はraw resource(mobilenetv2)を使用する。
+ * ResNet50はailia-models-tfliteのint8量子化モデル(recalibrated)を使用する。
+ */
+enum class TFLiteClassificationModelType(
+    val displayName: String,
+    val modelUrl: String?,
+    val modelFile: String?,
+) {
+    MOBILENETV2("MobileNetV2", null, null),
+    RESNET50(
+        "ResNet50",
+        "https://storage.googleapis.com/ailia-models-tflite/resnet50/resnet50_quant_recalib.tflite",
+        "resnet50_quant_recalib.tflite"
+    ),
+}
+
+class AiliaTFLiteClassificationSample(private val modelDirectory: File) {
     companion object {
         private const val TAG = "AILIA_Main"
     }
 
-    private fun loadImage(inputTensorType: Int, inputBuffer: ByteArray, inputShape: IntArray, bitmap : Bitmap, quantScale: Float, quantZeroPoint: Long): ByteArray {
+    var modelType: TFLiteClassificationModelType = TFLiteClassificationModelType.MOBILENETV2
+
+    /** modelUrlを持つモデル(ResNet50)をmodelDirへダウンロードする */
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
+        val url = modelType.modelUrl ?: return true
+        val fileName = modelType.modelFile!!
+        return try {
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(url, fileName), listener) != null)
+            listener?.onComplete()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Model Download Failed: $fileName", e)
+            listener?.onError(e.message ?: "Download failed")
+            false
+        }
+    }
+
+    /** ダウンロード済みモデルファイルから初期化する */
+    fun initializeFromFile(env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
+        val fileName = modelType.modelFile ?: return false
+        return try {
+            val modelData = File(modelDirectory, fileName).readBytes()
+            initializeClassification(modelData, env)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read model file: ${e.message}")
+            false
+        }
+    }
+
+    private fun loadImage(inputShape: IntArray, bitmap: Bitmap, quantScale: Float, quantZeroPoint: Long): ByteArray {
         Log.i(TAG, ""+inputShape[0].toString()+" "+inputShape[1].toString()+ " "+inputShape[2].toString()+ " "+inputShape[3].toString())
         val scaledBitmap = Bitmap.createScaledBitmap(bitmap, inputShape[2], inputShape[1], true)
         val channels = inputShape[3]
@@ -24,6 +65,7 @@ class AiliaTFLiteClassificationSample {
 
         val pixels = IntArray(inputShape[1] * inputShape[2])
         scaledBitmap.getPixels(pixels, 0, inputShape[2], 0, 0, inputShape[2], inputShape[1])
+        if (scaledBitmap !== bitmap) scaledBitmap.recycle()
 
         for (y in 0 until inputShape[1]) {
             for (x in 0 until inputShape[2]) {
@@ -31,25 +73,27 @@ class AiliaTFLiteClassificationSample {
                 val r : Int = (pixel shr 16) and 0xFF
                 val g : Int = (pixel shr 8) and 0xFF
                 val b : Int = pixel and 0xFF
-                val r2 : Int = maxOf(0.toInt(), minOf(((r / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
-                val g2 : Int = maxOf(0.toInt(), minOf(((g / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
-                val b2 : Int = maxOf(0.toInt(), minOf(((b / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
-                buffer[(y * inputShape[2] + x) * channels + 0] = r2.toByte()
-                buffer[(y * inputShape[2] + x) * channels + 1] = g2.toByte()
-                buffer[(y * inputShape[2] + x) * channels + 2] = b2.toByte()
+                if (modelType == TFLiteClassificationModelType.RESNET50) {
+                    // ResNet50: Caffe前処理(BGR順・mean減算)+int8量子化
+                    // (ailia-models-tfliteのnormalize_image(normalize_type='Caffe')と同じ)
+                    val bq = maxOf(-128, minOf((((b - 103.939f) / quantScale) + quantZeroPoint).toInt(), 127))
+                    val gq = maxOf(-128, minOf((((g - 116.779f) / quantScale) + quantZeroPoint).toInt(), 127))
+                    val rq = maxOf(-128, minOf((((r - 123.68f) / quantScale) + quantZeroPoint).toInt(), 127))
+                    buffer[(y * inputShape[2] + x) * channels + 0] = bq.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 1] = gq.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 2] = rq.toByte()
+                } else {
+                    // MobileNetV2: [-1, 1]正規化(RGB順)
+                    val r2 : Int = maxOf(0.toInt(), minOf(((r / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
+                    val g2 : Int = maxOf(0.toInt(), minOf(((g / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
+                    val b2 : Int = maxOf(0.toInt(), minOf(((b / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
+                    buffer[(y * inputShape[2] + x) * channels + 0] = r2.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 1] = g2.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 2] = b2.toByte()
+                }
             }
         }
         return buffer
-    }
-
-    private fun dequantUint8(
-        value: Byte, quantScale: Float, quantZeroPoint: Long, tensorType: Int
-    ): Float {
-        return if (tensorType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8) {
-            ((value.toInt() - quantZeroPoint).toFloat() * quantScale)
-        } else {
-            (((value.toInt() and 0xFF) - quantZeroPoint).toFloat() * quantScale)
-        }
     }
 
     private var tflite: AiliaTFLite? = null
@@ -135,42 +179,53 @@ class AiliaTFLiteClassificationSample {
         }
     }
 
-    fun processClassification(bitmap: Bitmap): Long {
+    /** Compatibility wrapper for the demo UI. Use [classify] for typed output. */
+    fun processClassification(bitmap: Bitmap): Long = classify(bitmap)?.processingTimeMs ?: -1
+
+    /** Runs preprocessing, inference and postprocessing and returns typed output. */
+    fun classify(bitmap: Bitmap): ModelInferenceResult<ClassificationResult>? {
         if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
             Log.e(TAG, "Classification not initialized properly")
-            return -1
+            return null
         }
 
         return try {
-            val inputTensorType = tflite!!.getInputTensorType(0)
             val inputQuantScale = tflite!!.getTensorQuantizationScale(inputTensorIndex)?.get(0) ?: 1.0f
             val inputQuantZeroPoint = tflite!!.getTensorQuantizationZeroPoint(inputTensorIndex)?.get(0) ?: 0L
-            
-            val inputBuffer = loadImage(inputTensorType, ByteArray(inputShape!![1] * inputShape!![2] * inputShape!![3]), inputShape!!, bitmap, inputQuantScale, inputQuantZeroPoint)
+
+            val inputBuffer = loadImage(inputShape!!, bitmap, inputQuantScale, inputQuantZeroPoint)
 
             if (!tflite!!.setTensorData(inputTensorIndex, inputBuffer)) {
                 Log.e(TAG, "Failed to set input tensor data")
-                return -1
+                return null
             }
 
             val startTime = System.nanoTime()
             if (!tflite!!.predict()) {
                 Log.e(TAG, "Predict failed")
-                return -1
+                return null
             }
             val endTime = System.nanoTime()
 
             val outputData = tflite!!.getTensorData(outputTensorIndex) ?: run {
                 Log.e(TAG, "Failed to get output tensor data")
-                return -1
+                return null
             }
 
-            lastClassificationResult = postProcess(inputShape!!, outputShape!!, outputData, outputType, quantScale, quantZeroPoint)
-
-            (endTime - startTime) / 1000000
+            val result = decodeQuantizedClassification(
+                outputShape!!,
+                outputData,
+                outputType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8,
+                quantScale,
+                quantZeroPoint,
+                ImageNetLabels.CATEGORY,
+            )
+            lastClassificationResult = result.displayText()
+            Log.i(TAG, "class ${result.category} ${result.label} confidence ${result.confidence}")
+            ModelInferenceResult(result, (endTime - startTime) / 1_000_000)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to process classification: ${e.javaClass.name}: ${e.message}")
-            -1
+            null
         }
     }
 
@@ -193,30 +248,33 @@ class AiliaTFLiteClassificationSample {
         }
     }
 
-    private fun postProcess(
-        inputShape: IntArray,
-        outputShape: IntArray,
-        outputBuffer: ByteArray,
-        outputTensorType: Int,
-        quantScale: Float,
-        quantZeroPoint: Long,
-    ): String {
-        var max_c = 0.0f;
-        var max_i = 0;
-        for (i in 0 until 1000) {
-            val c = dequantUint8(outputBuffer[i], quantScale, quantZeroPoint, outputTensorType)
-            if (max_c < c) {
-                max_c = c;
-                max_i = i;
-            }
-        }
-        val result = "${CocoAndImageNetLabels.IMAGENET_CATEGORY[max_i]} (${String.format("%.2f", max_c)})"
-        Log.i(TAG, "class " + max_i.toString() + " " + CocoAndImageNetLabels.IMAGENET_CATEGORY[max_i] + " confidence " + max_c.toString())
-        return result
-    }
-    
     fun getLastClassificationResult(): String {
         return lastClassificationResult
     }
 
+}
+
+/** Pure quantized classification postprocessing for host-side unit tests. */
+internal fun decodeQuantizedClassification(
+    outputShape: IntArray,
+    outputBuffer: ByteArray,
+    signed: Boolean,
+    quantScale: Float,
+    quantZeroPoint: Long,
+    labels: Array<String>,
+): ClassificationResult {
+    val classCount = outputShape.fold(1) { total, dimension -> total * dimension }
+    require(classCount == labels.size) { "Unexpected classification output count: $classCount" }
+    require(outputBuffer.size >= classCount) { "Classification output buffer is too small" }
+    var maxConfidence = Float.NEGATIVE_INFINITY
+    var maxCategory = 0
+    for (category in 0 until classCount) {
+        val quantized = if (signed) outputBuffer[category].toInt() else outputBuffer[category].toInt() and 0xFF
+        val confidence = (quantized - quantZeroPoint).toFloat() * quantScale
+        if (confidence > maxConfidence) {
+            maxConfidence = confidence
+            maxCategory = category
+        }
+    }
+    return ClassificationResult(maxCategory, labels[maxCategory], maxConfidence)
 }

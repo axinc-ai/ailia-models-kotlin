@@ -1,86 +1,39 @@
 package jp.axinc.ailia_kotlin
 
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.util.Log
 import axip.ailia.*
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.EnumSet
 
-class AiliaOnnxObjectDetectionSample {
+class AiliaOnnxObjectDetectionSample(private val modelDirectory: File) {
     companion object {
         private const val TAG = "AILIA_Main"
+        init { System.loadLibrary("ailia") }
         private const val MODEL_URL = "https://storage.googleapis.com/ailia-models/yolox/yolox_s.opt.onnx"
         private const val MODEL_FILE = "yolox_s.opt.onnx"
         private const val PROTO_URL = "https://storage.googleapis.com/ailia-models/yolox/yolox_s.opt.onnx.prototxt"
         private const val PROTO_FILE = "yolox_s.opt.onnx.prototxt"
     }
 
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
-
     private var ailia: AiliaModel? = null
     private var detector: AiliaDetectorModel? = null
     private var isInitialized = false
-    private var lastDetectionResults: List<AiliaTrackerSample.DetectionResult> = emptyList()
-    var modelDir: String = ""
+    private var lastDetectionResults: List<DetectionResult> = emptyList()
 
-    private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): Boolean {
-        val dir = modelDir
-        val path = "$dir/$fileName"
-        val file = File(path)
-        if (file.exists()) {
-            if (file.canRead()) {
-                Log.i(TAG, "Model file already exists and readable: $path (${file.length()} bytes)")
-                return true
-            } else {
-                Log.w(TAG, "Model file exists but not readable, re-downloading: $path")
-                file.delete()
-            }
-        }
-        File(path).parentFile?.mkdirs()
-        val tmpFile = File("$path.tmp")
-        val url = URL(urlStr)
-        val connection = url.openConnection() as HttpURLConnection
-        connection.connectTimeout = 30000
-        connection.readTimeout = 60000
-        connection.connect()
-        val totalBytes = connection.contentLengthLong
-        connection.inputStream.use { input ->
-            FileOutputStream(tmpFile).use { output ->
-                val buffer = ByteArray(8192)
-                var bytesDownloaded: Long = 0
-                var bytesRead: Int
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    output.write(buffer, 0, bytesRead)
-                    bytesDownloaded += bytesRead
-                    listener?.onProgress(fileName, bytesDownloaded, totalBytes)
-                }
-            }
-        }
-        tmpFile.renameTo(File(path))
-        return true
-    }
-
-    fun downloadModel(listener: DownloadListener? = null): Boolean {
-        try {
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
+        return try {
             Log.i(TAG, "Starting ONNX model download/check...")
-            downloadFile(PROTO_URL, PROTO_FILE, listener)
-            downloadFile(MODEL_URL, MODEL_FILE, listener)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(PROTO_URL, PROTO_FILE), listener) != null)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(MODEL_URL, MODEL_FILE), listener) != null)
             listener?.onComplete()
             Log.i(TAG, "ONNX model download/check complete")
-            return true
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Model Download Failed: $MODEL_FILE", e)
             listener?.onError(e.message ?: "Download failed")
-            return false
+            false
         }
     }
 
@@ -90,9 +43,8 @@ class AiliaOnnxObjectDetectionSample {
         }
 
         return try {
-            val dir = modelDir
-            val protoPath = "$dir/$PROTO_FILE"
-            val modelPath = "$dir/$MODEL_FILE"
+            val protoPath = File(modelDirectory, PROTO_FILE).absolutePath
+            val modelPath = File(modelDirectory, MODEL_FILE).absolutePath
 
             ailia = AiliaModel(envId, Ailia.MULTITHREAD_AUTO, protoPath, modelPath)
 
@@ -102,7 +54,7 @@ class AiliaOnnxObjectDetectionSample {
                 AiliaNetworkImageChannel.FIRST,
                 AiliaNetworkImageRange.UNSIGNED_INT8,
                 AiliaDetectorAlgorithm.YOLOX,
-                CocoAndImageNetLabels.COCO_CATEGORY.size,
+                CocoLabels.CATEGORY.size,
                 EnumSet.noneOf(AiliaDetectorFlags::class.java)
             )
 
@@ -116,72 +68,33 @@ class AiliaOnnxObjectDetectionSample {
         }
     }
 
-    fun processObjectDetection(img: ByteArray, bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int, threshold: Float = 0.25f, iou: Float = 0.45f): Long {
-        if (!isInitialized || detector == null) {
-            Log.e(TAG, "ONNX Object detection not initialized")
-            return -1
-        }
-
-        return try {
-            val startTime = System.nanoTime()
-            detector!!.compute(img, w * 4, w, h, AiliaImageFormat.RGBA, threshold, iou)
-            val endTime = System.nanoTime()
-
-            val count = detector!!.objectCount
-            val detectionResults = mutableListOf<AiliaTrackerSample.DetectionResult>()
-
-            for (i in 0 until count) {
-                val obj = detector!!.getObject(i)
-                canvas.drawRect(
-                    obj.x * w, obj.y * h,
-                    (obj.x + obj.w) * w, (obj.y + obj.h) * h,
-                    paint
-                )
-                val label = if (obj.category < CocoAndImageNetLabels.COCO_CATEGORY.size) {
-                    CocoAndImageNetLabels.COCO_CATEGORY[obj.category]
-                } else {
-                    "class${obj.category}"
-                }
-                canvas.drawText("$label ${String.format("%.2f", obj.prob)}", obj.x * w, obj.y * h, text)
-
-                detectionResults.add(
-                    AiliaTrackerSample.DetectionResult(
-                        category = obj.category,
-                        confidence = obj.prob,
-                        x = obj.x,
-                        y = obj.y,
-                        width = obj.w,
-                        height = obj.h
-                    )
-                )
-
-                Log.i(TAG, "x=${obj.x}, y=${obj.y}, w=${obj.w}, h=${obj.h}, class=[${obj.category}, $label], score=${obj.prob}")
-            }
-
-            lastDetectionResults = detectionResults
-            (endTime - startTime) / 1000000
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to process ONNX object detection: ${e.javaClass.name}: ${e.message}")
-            -1
-        }
+    fun processObjectDetection(img: ByteArray, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int, threshold: Float = 0.25f, iou: Float = 0.45f): Long {
+        val result = detect(img, w, h, threshold, iou) ?: return -1
+        lastDetectionResults = result.value
+        drawDetections(result.value, canvas, paint, text, w, h)
+        return result.processingTimeMs
     }
 
     fun processObjectDetectionWithoutDrawing(img: ByteArray, w: Int, h: Int, threshold: Float = 0.25f, iou: Float = 0.45f): Long {
-        if (!isInitialized || detector == null) {
-            return -1
-        }
+        val result = detect(img, w, h, threshold, iou) ?: return -1
+        lastDetectionResults = result.value
+        return result.processingTimeMs
+    }
 
+    /** Runs detection without depending on Canvas or View classes. */
+    fun detect(img: ByteArray, w: Int, h: Int, threshold: Float = 0.25f, iou: Float = 0.45f): ModelInferenceResult<List<DetectionResult>>? {
+        val currentDetector = detector
+        if (!isInitialized || currentDetector == null) return null
         return try {
             val startTime = System.nanoTime()
-            detector!!.compute(img, w * 4, w, h, AiliaImageFormat.RGBA, threshold, iou)
+            currentDetector.compute(img, w * 4, w, h, AiliaImageFormat.RGBA, threshold, iou)
             val endTime = System.nanoTime()
-
-            val count = detector!!.objectCount
-            val detectionResults = mutableListOf<AiliaTrackerSample.DetectionResult>()
+            val count = currentDetector.objectCount
+            val detectionResults = mutableListOf<DetectionResult>()
             for (i in 0 until count) {
-                val obj = detector!!.getObject(i)
+                val obj = currentDetector.getObject(i)
                 detectionResults.add(
-                    AiliaTrackerSample.DetectionResult(
+                    DetectionResult(
                         category = obj.category,
                         confidence = obj.prob,
                         x = obj.x,
@@ -191,15 +104,34 @@ class AiliaOnnxObjectDetectionSample {
                     )
                 )
             }
-            lastDetectionResults = detectionResults
-            (endTime - startTime) / 1000000
+            ModelInferenceResult(detectionResults, (endTime - startTime) / 1_000_000)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to process ONNX object detection: ${e.javaClass.name}: ${e.message}")
-            -1
+            Log.e(TAG, "Failed to process ONNX object detection: ${e.javaClass.name}: ${e.message}", e)
+            null
         }
     }
 
-    fun getDetectionResults(): List<AiliaTrackerSample.DetectionResult> {
+    fun drawDetections(
+        detections: List<DetectionResult>,
+        canvas: Canvas,
+        paint: Paint,
+        text: Paint,
+        w: Int,
+        h: Int,
+    ) {
+        for (detection in detections) {
+            val catColor = CategoryColors.forCategory(detection.category)
+            val left = detection.x * w
+            val top = detection.y * h
+            canvas.drawRect(left, top, (detection.x + detection.width) * w, (detection.y + detection.height) * h, Paint(paint).apply { color = catColor })
+            val label = CocoLabels.CATEGORY.getOrElse(detection.category) { "class${detection.category}" }
+            val labelText = "$label ${String.format(java.util.Locale.ROOT, "%.2f", detection.confidence)}"
+            canvas.drawRect(left, top - text.textSize, left + text.measureText(labelText), top + text.textSize * 0.2f, Paint().apply { style = Paint.Style.FILL; color = catColor })
+            canvas.drawText(labelText, left, top, Paint(text).apply { color = android.graphics.Color.WHITE })
+        }
+    }
+
+    fun getDetectionResults(): List<DetectionResult> {
         return lastDetectionResults
     }
 

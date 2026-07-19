@@ -1,19 +1,8 @@
 package jp.axinc.ailia_kotlin
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.util.Log
-import android.widget.ImageView
-import axip.ailia_tflite.AiliaTFLite
-import java.io.File
-import kotlin.math.exp
-import kotlin.math.pow
-
-class CocoAndImageNetLabels {
+class ImageNetLabels private constructor() {
     companion object {
-        public val IMAGENET_CATEGORY = arrayOf(
+        val CATEGORY = arrayOf(
             "tench, Tinca tinca",
             "goldfish, Carassius auratus",
             "great white shark, white shark, man-eater, man-eating shark, Carcharodon carcharias",
@@ -1016,88 +1005,5 @@ class CocoAndImageNetLabels {
             "toilet tissue, toilet paper, bathroom tissue",
         )
 
-        // COCO categories for object detection
-        public val COCO_CATEGORY = arrayOf(
-            "person",
-            "bicycle",
-            "car",
-            "motorcycle",
-            "airplane",
-            "bus",
-            "train",
-            "truck",
-            "boat",
-            "traffic light",
-            "fire hydrant",
-            "stop sign",
-            "parking meter",
-            "bench",
-            "bird",
-            "cat",
-            "dog",
-            "horse",
-            "sheep",
-            "cow",
-            "elephant",
-            "bear",
-            "zebra",
-            "giraffe",
-            "backpack",
-            "umbrella",
-            "handbag",
-            "tie",
-            "suitcase",
-            "frisbee",
-            "skis",
-            "snowboard",
-            "sports ball",
-            "kite",
-            "baseball bat",
-            "baseball glove",
-            "skateboard",
-            "surfboard",
-            "tennis racket",
-            "bottle",
-            "wine glass",
-            "cup",
-            "fork",
-            "knife",
-            "spoon",
-            "bowl",
-            "banana",
-            "apple",
-            "sandwich",
-            "orange",
-            "broccoli",
-            "carrot",
-            "hot dog",
-            "pizza",
-            "donut",
-            "cake",
-            "chair",
-            "couch",
-            "potted plant",
-            "bed",
-            "dining table",
-            "toilet",
-            "tv",
-            "laptop",
-            "mouse",
-            "remote",
-            "keyboard",
-            "cell phone",
-            "microwave",
-            "oven",
-            "toaster",
-            "sink",
-            "refrigerator",
-            "book",
-            "clock",
-            "vase",
-            "scissors",
-            "teddy bear",
-            "hair drier",
-            "toothbrush",
-        )
     }
 }
