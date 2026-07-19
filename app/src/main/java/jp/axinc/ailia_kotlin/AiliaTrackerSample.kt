@@ -153,7 +153,11 @@ class AiliaTrackerSample {
                             isAntiAlias = true
                         }
                         val labelPadding = 6f
-                        val labelHeight = textPaint.fontMetrics.run { bottom - top }
+                        // BBoxにもtop/bottomというローカル変数があるため、FontMetricsを
+                        // 明示的に参照する。暗黙参照ではBBoxの高さがラベル高として使われ、
+                        // 背景がBBoxの下端まで伸びてしまう。
+                        val fontMetrics = textPaint.fontMetrics
+                        val labelHeight = fontMetrics.bottom - fontMetrics.top
                         val labelTop = if (top >= labelHeight + labelPadding * 2) {
                             top - labelHeight - labelPadding * 2
                         } else {
@@ -175,7 +179,7 @@ class AiliaTrackerSample {
                         canvas.drawText(
                             label,
                             left + labelPadding,
-                            labelTop + labelPadding - textPaint.fontMetrics.top,
+                            labelTop + labelPadding - fontMetrics.top,
                             textPaint
                         )
                     }

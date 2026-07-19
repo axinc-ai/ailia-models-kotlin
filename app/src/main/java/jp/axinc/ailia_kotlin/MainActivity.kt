@@ -115,6 +115,7 @@ class MainActivity : AppCompatActivity() {
     private var isStopCamera = AtomicBoolean(false)
     private var isDownloadingModel = AtomicBoolean(false)
     private val operationGeneration = AtomicLong(0)
+    private val visionDisplayGeneration = AtomicLong(0)
     private val activityDestroyed = AtomicBoolean(false)
 
     private var imageAnalyzer: ImageAnalysis? = null
@@ -354,6 +355,8 @@ class MainActivity : AppCompatActivity() {
 
     /** モデル変更前の推論結果を消し、現在の入力表示へ戻す。 */
     private fun resetVisionDisplayForModelChange() {
+        // 切り替え前に開始したカメラ推論のUI反映も無効化する。
+        visionDisplayGeneration.incrementAndGet()
         latestCameraBitmap = null
         processingTimeTextView.text = "Processing Time: -- ms"
         classificationResultTextView.text = "Classification Result: --"
@@ -361,7 +364,8 @@ class MainActivity : AppCompatActivity() {
 
         if (modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton) {
             // ImageViewはPreviewViewより手前にあるため、前モデルの最終フレームを消す。
-            imageView.setImageDrawable(null)
+            imageView.setImageBitmap(null)
+            imageView.invalidate()
         } else if (currentAlgorithm != AlgorithmType.TOKENIZE) {
             val options = Options().apply { inScaled = false }
             imageView.setImageBitmap(
@@ -453,6 +457,7 @@ class MainActivity : AppCompatActivity() {
                         isInitialized = false
                         isDownloadingModel.set(false)
                         resetRunState()
+                        resetVisionDisplayForModelChange()
                         val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
                         if (isImageMode) {
                             releaseCurrentAlgorithm()
@@ -514,6 +519,7 @@ class MainActivity : AppCompatActivity() {
                                 isInitialized = false
                                 isDownloadingModel.set(false)
                                 resetRunState()
+                                resetVisionDisplayForModelChange()
                                 val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
                                 if (isImageMode) {
                                     releaseCurrentAlgorithm()
@@ -1034,8 +1040,9 @@ class MainActivity : AppCompatActivity() {
         isInitialized = false
         isDownloadingModel.set(false)
         resetRunState()
-        // アルゴリズム切り替え時にProcessing Timeと波形表示をリセット
-        processingTimeTextView.text = "Processing Time: -- ms"
+        // アルゴリズム切り替え時も、前モデルが描画した画像を残さない。
+        resetVisionDisplayForModelChange()
+        // アルゴリズム切り替え時に波形表示をリセット
         hideModelDownloadProgress()
         waveformView.clear()
         voiceWaveformView.clear()
@@ -2391,6 +2398,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             isProcessing.set(true)
+            val displayGeneration = visionDisplayGeneration.get()
 
             try {
                 // フロントカメラはPreviewViewと同じ鏡像表示になるよう左右反転する
@@ -2412,6 +2420,10 @@ class MainActivity : AppCompatActivity() {
                 val processingTime = processAlgorithm(img, bitmap, canvas, w, h)
 
                 runOnUiThreadIfActive {
+                    // モデル/アルゴリズム切り替え前に開始したフレームは表示しない。
+                    if (displayGeneration != visionDisplayGeneration.get()) {
+                        return@runOnUiThreadIfActive
+                    }
                     // Stop押下後に処理中だったフレームの結果で表示を上書きしない
                     if (needsVisionRunButton() && !runRequested) {
                         return@runOnUiThreadIfActive
