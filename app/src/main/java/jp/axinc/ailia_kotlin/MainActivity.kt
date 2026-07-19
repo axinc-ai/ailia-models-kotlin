@@ -79,6 +79,7 @@ class MainActivity : AppCompatActivity() {
 
     // 議事録風トランスクリプト([mm:ss - mm:ss] text の蓄積)
     private val speechTranscript = mutableListOf<String>()
+    private var speechIntermediateText: String? = null
 
     private var poseEstimatorSample = AiliaPoseEstimatorSample()
     private var objectDetectionSample = AiliaTFLiteObjectDetectionSample()
@@ -1793,13 +1794,27 @@ class MainActivity : AppCompatActivity() {
     /** 議事録風トランスクリプトに行を追記して表示を更新する(UIスレッドで呼ぶこと) */
     private fun appendTranscriptLines(lines: List<String>) {
         if (lines.isEmpty()) return
+        speechIntermediateText = null
         speechTranscript.addAll(lines)
-        transcriptTextView.text = speechTranscript.joinToString("\n")
+        updateTranscriptDisplay()
+    }
+
+    /** 確定済み行の末尾にIntermediate結果を一時表示する。次の結果で同じ行を置き換える。 */
+    private fun showIntermediateTranscript(text: String) {
+        speechIntermediateText = text.trim().takeIf { it.isNotEmpty() }
+        updateTranscriptDisplay()
+    }
+
+    private fun updateTranscriptDisplay() {
+        val displayLines = speechTranscript.toMutableList()
+        speechIntermediateText?.let { displayLines.add("$it...") }
+        transcriptTextView.text = displayLines.joinToString("\n")
         scrollResultToBottom()
     }
 
     private fun clearTranscript() {
         speechTranscript.clear()
+        speechIntermediateText = null
         transcriptTextView.text = ""
     }
 
@@ -1941,10 +1956,19 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            override fun onIntermediateResult(text: String) {
+                runOnUiThread {
+                    showIntermediateTranscript(text)
+                    classificationResultTextView.text = "Recording..."
+                }
+            }
+
             override fun onResult(lines: List<String>, isFinal: Boolean) {
                 runOnUiThread {
                     appendTranscriptLines(lines)
                     if (isFinal) {
+                        speechIntermediateText = null
+                        updateTranscriptDisplay()
                         classificationResultTextView.text =
                             if (speechTranscript.isEmpty()) "Speech Result: (no speech detected)" else "Speech Result:"
                         recTimerHandler.removeCallbacks(recTimerRunnable)

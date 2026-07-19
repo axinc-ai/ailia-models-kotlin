@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import axip.ailia_speech.AiliaSpeech
 import axip.ailia_speech.AiliaSpeechText
+import axip.ailia_speech.IntermediateCallback
 
 /**
  * Enum defining available speech recognition models.
@@ -66,6 +67,7 @@ class AiliaSpeechSample {
     /** マイク録音中にUIへ返すデータだけを定義する。各コールバックはバックグラウンドスレッドで呼ばれる。 */
     interface MicRecordingListener {
         fun onWaveform(samples: FloatArray, sampleRate: Int)
+        fun onIntermediateResult(text: String)
         fun onResult(lines: List<String>, isFinal: Boolean)
         fun onError(error: String)
     }
@@ -89,6 +91,8 @@ class AiliaSpeechSample {
     private val micRecording = AtomicBoolean(false)
     private val micSessionActive = AtomicBoolean(false)
     private val finalizeMicInput = AtomicBoolean(true)
+    private var liveModeEnabled = false
+    private var speechIntermediateCallback: IntermediateCallback? = null
     var modelDir: String = ""
     var currentModelType: SpeechModelType = SpeechModelType.SENSEVOICE_SMALL
     var diarizationEnabled: Boolean = false
@@ -200,6 +204,7 @@ class AiliaSpeechSample {
             // Streaming still works without the LIVE flag
             val useLiveFlag = liveMode && !diarizationEnabled
             val flags = if (useLiveFlag) AiliaSpeech.AILIA_SPEECH_FLAG_LIVE else AiliaSpeech.AILIA_SPEECH_FLAG_NONE
+            liveModeEnabled = useLiveFlag
 
             Log.i(TAG, "Initializing speech with envId=$envId, model=${currentModelType.displayName}, liveMode=$liveMode, diarization=$diarizationEnabled, useLiveFlag=$useLiveFlag")
             Log.i(TAG, "Encoder: $encoderPath")
@@ -331,6 +336,27 @@ class AiliaSpeechSample {
         if (!micSessionActive.compareAndSet(false, true)) {
             listener.onError("Previous microphone session is still finalizing")
             return false
+        }
+
+        if (liveModeEnabled) {
+            val callback = object : IntermediateCallback {
+                override fun onIntermediateResult(text: String): Int {
+                    listener.onIntermediateResult(text)
+                    return 0
+                }
+            }
+            val callbackResult = speech?.setIntermediateCallback(callback)
+            Log.i(TAG, "Speech setIntermediateCallback result=$callbackResult")
+            if (callbackResult != 0) {
+                speechIntermediateCallback = null
+                micSessionActive.set(false)
+                listener.onError("Failed to register intermediate result callback: $callbackResult")
+                return false
+            }
+            // Keep a strong reference while the native speech instance owns the callback.
+            speechIntermediateCallback = callback
+        } else {
+            speechIntermediateCallback = null
         }
 
         val sampleRate = 16000
@@ -607,6 +633,8 @@ class AiliaSpeechSample {
             Log.e(TAG, "Error releasing speech: ${e.javaClass.name}: ${e.message}")
         } finally {
             speech = null
+            speechIntermediateCallback = null
+            liveModeEnabled = false
             isInitialized = false
             Log.i(TAG, "Speech released")
         }
