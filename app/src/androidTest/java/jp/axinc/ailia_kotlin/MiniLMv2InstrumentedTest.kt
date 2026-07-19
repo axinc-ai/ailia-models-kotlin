@@ -30,8 +30,7 @@ class MiniLMv2InstrumentedTest {
     fun setup() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         modelDir = context.filesDir.absolutePath
-        miniLMv2Sample = AiliaMiniLMv2Sample()
-        miniLMv2Sample.modelDir = modelDir
+        miniLMv2Sample = AiliaMiniLMv2Sample(File(modelDir))
     }
 
     @Test

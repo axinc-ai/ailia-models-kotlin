@@ -43,10 +43,7 @@ class SpeechModelTypeTest {
 
     @Test
     fun speechSample_defaultsToSenseVoice() {
-        assertEquals(
-            SpeechModelType.SENSEVOICE_SMALL,
-            AiliaSpeechSample().currentModelType
-        )
+        assertEquals(SpeechModelType.SENSEVOICE_SMALL, AiliaSpeechSample.DEFAULT_MODEL_TYPE)
     }
 
     @Test

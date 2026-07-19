@@ -24,6 +24,7 @@ class AiliaPoseEstimatorSample {
     private var isInitialized = false
 
     companion object {
+        init { System.loadLibrary("ailia") }
         // Python版(lightweight-human-pose-estimation.py)と同じ閾値。
         // スコアがこれ以下のキーポイント/ラインは描画しない
         private const val KEYPOINT_THRESHOLD = 0.3f

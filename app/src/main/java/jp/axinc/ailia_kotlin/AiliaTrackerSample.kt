@@ -6,6 +6,7 @@ import android.graphics.Paint
 import android.graphics.PointF
 import android.util.Log
 import axip.ailia_tracker.*
+import java.util.Locale
 
 class AiliaTrackerSample {
     companion object {
@@ -86,7 +87,7 @@ class AiliaTrackerSample {
                     val obj = tracker!!.getObject(i)
                     obj?.let {
                         Log.d(TAG, "Object $i: id=${it.id}, category=${it.category}, prob=${it.prob}, x=${it.x}, y=${it.y}, w=${it.w}, h=${it.h}")
-                        trackingInfo += "\nID:${it.id} Cat:${it.category} Conf:${String.format("%.2f", it.prob)}"
+                        trackingInfo += "\nID:${it.id} Cat:${it.category} Conf:${String.format(Locale.ROOT, "%.2f", it.prob)}"
                         
                         // Calculate center point of bounding box
                         val centerX = w * (it.x + it.w / 2)
@@ -207,13 +208,4 @@ class AiliaTrackerSample {
         return Color.HSVToColor(floatArrayOf(hue, saturation, value))
     }
     
-    data class DetectionResult(
-        val category: Int,
-        val confidence: Float,
-        val x: Float,
-        val y: Float,
-        val width: Float,
-        val height: Float
-    )
-
 }

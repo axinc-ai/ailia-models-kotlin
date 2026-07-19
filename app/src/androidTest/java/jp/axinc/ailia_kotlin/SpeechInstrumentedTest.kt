@@ -26,8 +26,7 @@ class SpeechInstrumentedTest {
     fun setup() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         modelDir = context.filesDir.absolutePath
-        speechSample = AiliaSpeechSample()
-        speechSample.modelDir = modelDir
+        speechSample = AiliaSpeechSample(File(modelDir))
     }
 
     private fun loadDemoAudio(): AudioUtil.WavFileData {

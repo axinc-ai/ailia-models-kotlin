@@ -8,18 +8,16 @@ import android.util.Log
 import axip.ailia.Ailia
 import axip.ailia.AiliaModel
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * U-2-Netによる背景除去サンプル(ailia-models-flutterのu2net.dartを移植)。
  * 320x320にリサイズしてImageNet正規化した画像を入力し、
  * 出力マスクを黒の半透明オーバーレイとして元画像に重ねる。
  */
-class AiliaU2NetSample {
+class AiliaU2NetSample(private val modelDirectory: File) {
     companion object {
         private const val TAG = "AILIA_Main"
+        init { System.loadLibrary("ailia") }
         private const val MODEL_URL = "https://storage.googleapis.com/ailia-models/u2net/u2net_opset11.onnx"
         private const val MODEL_FILE = "u2net_opset11.onnx"
         private const val PROTO_URL = "https://storage.googleapis.com/ailia-models/u2net/u2net_opset11.onnx.prototxt"
@@ -33,43 +31,12 @@ class AiliaU2NetSample {
 
     private var ailia: AiliaModel? = null
     private var isInitialized = false
-    var modelDir: String = ""
-
-    private fun downloadFile(urlStr: String, fileName: String, listener: ModelDownloadListener? = null): Boolean {
-        val path = "$modelDir/$fileName"
-        val file = File(path)
-        if (file.exists() && file.canRead()) {
-            Log.i(TAG, "Model file already exists: $path (${file.length()} bytes)")
-            return true
-        }
-        file.parentFile?.mkdirs()
-        val tmpFile = File("$path.tmp")
-        val connection = URL(urlStr).openConnection() as HttpURLConnection
-        connection.connectTimeout = 30000
-        connection.readTimeout = 60000
-        connection.connect()
-        val totalBytes = connection.contentLengthLong
-        connection.inputStream.use { input ->
-            FileOutputStream(tmpFile).use { output ->
-                val buffer = ByteArray(8192)
-                var bytesDownloaded: Long = 0
-                var bytesRead: Int
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    output.write(buffer, 0, bytesRead)
-                    bytesDownloaded += bytesRead
-                    listener?.onProgress(fileName, bytesDownloaded, totalBytes)
-                }
-            }
-        }
-        tmpFile.renameTo(file)
-        return true
-    }
 
     fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
         return try {
             Log.i(TAG, "Starting U2Net model download/check...")
-            downloadFile(PROTO_URL, PROTO_FILE, listener)
-            downloadFile(MODEL_URL, MODEL_FILE, listener)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(PROTO_URL, PROTO_FILE), listener) != null)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(MODEL_URL, MODEL_FILE), listener) != null)
             listener?.onComplete()
             true
         } catch (e: Exception) {
@@ -84,7 +51,12 @@ class AiliaU2NetSample {
             release()
         }
         return try {
-            ailia = AiliaModel(envId, Ailia.MULTITHREAD_AUTO, "$modelDir/$PROTO_FILE", "$modelDir/$MODEL_FILE")
+            ailia = AiliaModel(
+                envId,
+                Ailia.MULTITHREAD_AUTO,
+                File(modelDirectory, PROTO_FILE).absolutePath,
+                File(modelDirectory, MODEL_FILE).absolutePath,
+            )
             isInitialized = true
             Log.i(TAG, "U2Net initialized successfully with envId=$envId")
             true
@@ -100,10 +72,17 @@ class AiliaU2NetSample {
      * canvasには元画像が描画済みであること。
      */
     fun process(bitmap: Bitmap, canvas: Canvas, w: Int, h: Int): Long {
+        val result = predictMask(bitmap) ?: return -1
+        drawMask(result.value, canvas, w, h)
+        return result.processingTimeMs
+    }
+
+    /** Returns the foreground mask without rendering it into an Android Canvas. */
+    fun predictMask(bitmap: Bitmap): ModelInferenceResult<SegmentationMask>? {
         val model = ailia
         if (!isInitialized || model == null) {
             Log.e(TAG, "U2Net not initialized")
-            return -1
+            return null
         }
 
         return try {
@@ -111,6 +90,7 @@ class AiliaU2NetSample {
             val scaled = Bitmap.createScaledBitmap(bitmap, IMAGE_SIZE, IMAGE_SIZE, true)
             val pixels = IntArray(IMAGE_SIZE * IMAGE_SIZE)
             scaled.getPixels(pixels, 0, IMAGE_SIZE, 0, 0, IMAGE_SIZE, IMAGE_SIZE)
+            if (scaled !== bitmap) scaled.recycle()
             val plane = IMAGE_SIZE * IMAGE_SIZE
             val input = FloatArray(3 * plane)
             for (i in 0 until plane) {
@@ -133,21 +113,21 @@ class AiliaU2NetSample {
             model.getBlobData(mask, mask.size * 4, outIdx)
             val endTime = System.nanoTime()
 
-            // マスクをアルファに変換した黒オーバーレイ(Flutter版のreverse表示と同じ)
-            val overlayPixels = IntArray(plane)
-            for (i in 0 until plane) {
-                val m = mask[i].coerceIn(0f, 1f)
-                val alpha = ((1.0f - m) * 255).toInt()
-                overlayPixels[i] = Color.argb(alpha, 0, 0, 0)
-            }
-            val overlay = Bitmap.createBitmap(overlayPixels, IMAGE_SIZE, IMAGE_SIZE, Bitmap.Config.ARGB_8888)
-            canvas.drawBitmap(overlay, null, Rect(0, 0, w, h), null)
-
-            (endTime - startTime) / 1000000
+            for (i in mask.indices) mask[i] = mask[i].coerceIn(0f, 1f)
+            ModelInferenceResult(SegmentationMask(IMAGE_SIZE, IMAGE_SIZE, mask), (endTime - startTime) / 1_000_000)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to process U2Net: ${e.javaClass.name}: ${e.message}")
-            -1
+            Log.e(TAG, "Failed to process U2Net: ${e.javaClass.name}: ${e.message}", e)
+            null
         }
+    }
+
+    fun drawMask(mask: SegmentationMask, canvas: Canvas, w: Int, h: Int) {
+        val overlayPixels = IntArray(mask.values.size)
+        for (i in mask.values.indices) {
+            overlayPixels[i] = Color.argb(((1.0f - mask.values[i]) * 255).toInt(), 0, 0, 0)
+        }
+        val overlay = Bitmap.createBitmap(overlayPixels, mask.width, mask.height, Bitmap.Config.ARGB_8888)
+        canvas.drawBitmap(overlay, null, Rect(0, 0, w, h), null)
     }
 
     fun release() {

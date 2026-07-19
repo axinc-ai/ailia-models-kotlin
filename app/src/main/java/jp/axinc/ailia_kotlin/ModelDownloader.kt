@@ -3,37 +3,38 @@ package jp.axinc.ailia_kotlin
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
+import java.util.Locale
+import java.util.Properties
 
 /**
- * Utility class for downloading model files from Google Cloud Storage.
+ * A model file and the information required to validate it.
+ *
+ * [expectedSize] and [sha256] are optional because not all hosted models expose
+ * immutable release metadata. Files downloaded by this class still receive a
+ * sidecar containing the server length and computed SHA-256, so subsequent
+ * launches can detect local corruption without accessing the network.
  */
+data class ModelFileSpec(
+    val url: String,
+    val fileName: String,
+    val expectedSize: Long? = null,
+    val sha256: String? = null,
+)
+
+/** Robust, shared downloader used by every sample in this application. */
 object ModelDownloader {
     private const val TAG = "ModelDownloader"
     private const val BASE_URL = "https://storage.googleapis.com/ailia-models"
+    private const val BUFFER_SIZE = 64 * 1024
 
-    // LLM Model URLs (gemmaモデルはすべて/gemma/に配置)
     const val GEMMA_2_MODEL_URL = "$BASE_URL/gemma/gemma-2-2b-it-Q4_K_M.gguf"
     const val GEMMA_3_MODEL_URL = "$BASE_URL/gemma/gemma-3-4b-it-Q4_K_M.gguf"
     const val GEMMA_3_MMPROJ_URL = "$BASE_URL/gemma/gemma-3-4b-it-GGUF_mmproj-model-f16.gguf"
-
-    /**
-     * Downloads an LLM model file from the gemma directory by file name.
-     */
-    fun downloadLLMModel(context: Context, fileName: String, listener: DownloadListener? = null): File? {
-        return downloadFile(context, "$BASE_URL/gemma/$fileName", fileName, listener)
-    }
-
-    /**
-     * Checks if the given LLM model file is already downloaded.
-     */
-    fun isLLMModelDownloaded(context: Context, fileName: String): Boolean {
-        return File(context.cacheDir, fileName).exists()
-    }
-
-    // Sample image for multimodal demo
     const val SAMPLE_IMAGE_URL = "$BASE_URL/misc/sample_image.jpg"
 
     interface DownloadListener {
@@ -42,163 +43,264 @@ object ModelDownloader {
         fun onError(error: String)
     }
 
-    /**
-     * Downloads a file from the given URL to the app's cache directory.
-     * If the file already exists and has the correct size, it skips the download.
-     *
-     * @param context The Android context
-     * @param url The URL to download from
-     * @param fileName The name of the file to save as
-     * @param listener Optional listener for download progress
-     * @return The downloaded file, or null if download failed
-     */
-    fun downloadFile(
+    /** Durable app-specific storage. Android does not evict it as a cache entry. */
+    fun modelDirectory(context: Context): File = (context.getExternalFilesDir(null) ?: context.filesDir).apply {
+        check(exists() || mkdirs()) { "Failed to create model directory: $absolutePath" }
+    }
+
+    fun downloadLLMModel(
         context: Context,
-        url: String,
         fileName: String,
-        listener: DownloadListener? = null
+        listener: DownloadListener? = null,
     ): File? {
-        val cacheDir = context.cacheDir
-        val file = File(cacheDir, fileName)
+        val directory = modelDirectory(context)
+        migrateLegacyCache(context, directory, fileName)
+        return downloadFile(
+            directory,
+            ModelFileSpec("$BASE_URL/gemma/$fileName", fileName),
+            listener,
+        )
+    }
 
-        // Check if file already exists
-        if (file.exists()) {
-            Log.i(TAG, "File already exists: ${file.absolutePath}")
-            listener?.onComplete(file)
-            return file
-        }
-
+    fun downloadFile(
+        directory: File,
+        spec: ModelFileSpec,
+        listener: DownloadListener? = null,
+    ): File? {
+        val file = File(directory, spec.fileName)
         return try {
-            Log.i(TAG, "Downloading: $url")
-
-            val urlConnection = URL(url).openConnection() as HttpURLConnection
-            urlConnection.connectTimeout = 30000
-            urlConnection.readTimeout = 60000
-            urlConnection.requestMethod = "GET"
-            urlConnection.connect()
-
-            if (urlConnection.responseCode != HttpURLConnection.HTTP_OK) {
-                val error = "HTTP error: ${urlConnection.responseCode}"
-                Log.e(TAG, error)
-                listener?.onError(error)
-                return null
+            check(directory.exists() || directory.mkdirs()) {
+                "Failed to create model directory: ${directory.absolutePath}"
+            }
+            val parent = file.parentFile ?: directory
+            check(parent.exists() || parent.mkdirs()) {
+                "Failed to create model subdirectory: ${parent.absolutePath}"
             }
 
-            // contentLengthLong requires API 24, use getHeaderField for API 21 compatibility
-            val totalBytes = urlConnection.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
-            var bytesDownloaded: Long = 0
+            if (isValid(file, spec)) {
+                Log.i(TAG, "Using validated model: ${file.absolutePath}")
+                listener?.onComplete(file)
+                return file
+            }
+            deleteInvalidArtifacts(file)
 
-            val tempFile = File(cacheDir, "$fileName.tmp")
+            val connection = (URL(spec.url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 30_000
+                readTimeout = 120_000
+                requestMethod = "GET"
+                instanceFollowRedirects = true
+                connect()
+            }
+            try {
+                check(connection.responseCode == HttpURLConnection.HTTP_OK) {
+                    "HTTP ${connection.responseCode} for ${spec.url}"
+                }
+                val responseSize = connection.getHeaderField("Content-Length")?.toLongOrNull()
+                    ?.takeIf { it >= 0 }
+                val requiredSize = spec.expectedSize ?: responseSize
+                val tempFile = File(directory, "${spec.fileName}.download")
+                if (tempFile.exists() && !tempFile.delete()) {
+                    error("Failed to remove stale temporary file: ${tempFile.absolutePath}")
+                }
 
-            urlConnection.inputStream.use { input ->
-                FileOutputStream(tempFile).use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
-
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        bytesDownloaded += bytesRead
-                        listener?.onProgress(bytesDownloaded, totalBytes)
+                val digest = MessageDigest.getInstance("SHA-256")
+                var downloaded = 0L
+                connection.inputStream.use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(BUFFER_SIZE)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            if (count == 0) continue
+                            output.write(buffer, 0, count)
+                            digest.update(buffer, 0, count)
+                            downloaded += count
+                            listener?.onProgress(downloaded, requiredSize ?: -1L)
+                        }
+                        output.fd.sync()
                     }
                 }
+
+                check(downloaded > 0) { "Downloaded file is empty: ${spec.fileName}" }
+                check(requiredSize == null || downloaded == requiredSize) {
+                    "Size mismatch for ${spec.fileName}: expected=$requiredSize actual=$downloaded"
+                }
+                val actualSha256 = digest.digest().toHex()
+                check(spec.sha256 == null || actualSha256.equals(spec.sha256, ignoreCase = true)) {
+                    "SHA-256 mismatch for ${spec.fileName}"
+                }
+
+                moveChecked(tempFile, file)
+                writeMetadata(file, spec.url, downloaded, actualSha256)
+                check(isValid(file, spec)) { "Downloaded model validation failed: ${spec.fileName}" }
+                listener?.onComplete(file)
+                file
+            } finally {
+                connection.disconnect()
             }
-
-            // Rename temp file to final file
-            tempFile.renameTo(file)
-
-            Log.i(TAG, "Download complete: ${file.absolutePath}")
-            listener?.onComplete(file)
-            file
-
         } catch (e: Exception) {
-            val error = "Download failed: ${e.message}"
+            deleteInvalidArtifacts(file)
+            val error = "Download failed for ${spec.fileName}: ${e.message}"
             Log.e(TAG, error, e)
             listener?.onError(error)
             null
         }
     }
 
-    /**
-     * Downloads the Gemma 2 LLM model for text inference.
-     */
-    fun downloadGemma2Model(context: Context, listener: DownloadListener? = null): File? {
-        return downloadFile(context, GEMMA_2_MODEL_URL, "gemma-2-2b-it-Q4_K_M.gguf", listener)
-    }
+    fun downloadFile(
+        directory: File,
+        spec: ModelFileSpec,
+        listener: ModelDownloadListener?,
+    ): File? = downloadFile(directory, spec, object : DownloadListener {
+        override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
+            listener?.onProgress(spec.fileName, bytesDownloaded, totalBytes)
+        }
 
-    /**
-     * Downloads the Gemma 3 LLM model for multimodal inference.
-     */
+        override fun onComplete(file: File) = Unit
+
+        override fun onError(error: String) {
+            listener?.onError(error)
+        }
+    })
+
+    fun isDownloaded(directory: File, spec: ModelFileSpec): Boolean = isValid(File(directory, spec.fileName), spec)
+
+    fun isLLMModelDownloaded(context: Context, fileName: String): Boolean = isDownloaded(
+        modelDirectory(context),
+        ModelFileSpec("$BASE_URL/gemma/$fileName", fileName),
+    )
+
+    fun downloadGemma2Model(context: Context, listener: DownloadListener? = null): File? =
+        downloadLLMModel(context, "gemma-2-2b-it-Q4_K_M.gguf", listener)
+
     fun downloadGemma3Model(context: Context, listener: DownloadListener? = null): File? {
-        return downloadFile(context, GEMMA_3_MODEL_URL, "gemma-3-4b-it-Q4_K_M.gguf", listener)
+        val directory = modelDirectory(context)
+        val fileName = "gemma-3-4b-it-Q4_K_M.gguf"
+        migrateLegacyCache(context, directory, fileName)
+        return downloadFile(directory, ModelFileSpec(GEMMA_3_MODEL_URL, fileName), listener)
     }
 
-    /**
-     * Downloads the Gemma 3 multimodal projector.
-     */
     fun downloadGemma3Projector(context: Context, listener: DownloadListener? = null): File? {
-        return downloadFile(context, GEMMA_3_MMPROJ_URL, "gemma-3-4b-it-GGUF_mmproj-model-f16.gguf", listener)
+        val directory = modelDirectory(context)
+        val fileName = "gemma-3-4b-it-GGUF_mmproj-model-f16.gguf"
+        migrateLegacyCache(context, directory, fileName)
+        return downloadFile(directory, ModelFileSpec(GEMMA_3_MMPROJ_URL, fileName), listener)
     }
 
-    /**
-     * Downloads the sample image for multimodal demo.
-     */
-    fun downloadSampleImage(context: Context, listener: DownloadListener? = null): File? {
-        return downloadFile(context, SAMPLE_IMAGE_URL, "sample_image.jpg", listener)
+    fun downloadSampleImage(context: Context, listener: DownloadListener? = null): File? = downloadFile(
+        modelDirectory(context),
+        ModelFileSpec(SAMPLE_IMAGE_URL, "sample_image.jpg"),
+        listener,
+    )
+
+    fun isGemma2ModelDownloaded(context: Context): Boolean =
+        isLLMModelDownloaded(context, "gemma-2-2b-it-Q4_K_M.gguf")
+
+    fun isGemma3ModelDownloaded(context: Context): Boolean =
+        isDownloaded(modelDirectory(context), ModelFileSpec(GEMMA_3_MODEL_URL, "gemma-3-4b-it-Q4_K_M.gguf"))
+
+    fun isGemma3ProjectorDownloaded(context: Context): Boolean = isDownloaded(
+        modelDirectory(context),
+        ModelFileSpec(GEMMA_3_MMPROJ_URL, "gemma-3-4b-it-GGUF_mmproj-model-f16.gguf"),
+    )
+
+    fun isSampleImageDownloaded(context: Context): Boolean =
+        isDownloaded(modelDirectory(context), ModelFileSpec(SAMPLE_IMAGE_URL, "sample_image.jpg"))
+
+    fun getGemma2ModelPath(context: Context): String =
+        File(modelDirectory(context), "gemma-2-2b-it-Q4_K_M.gguf").absolutePath
+
+    fun getGemma3ModelPath(context: Context): String =
+        File(modelDirectory(context), "gemma-3-4b-it-Q4_K_M.gguf").absolutePath
+
+    fun getGemma3ProjectorPath(context: Context): String =
+        File(modelDirectory(context), "gemma-3-4b-it-GGUF_mmproj-model-f16.gguf").absolutePath
+
+    fun getSampleImagePath(context: Context): String =
+        File(modelDirectory(context), "sample_image.jpg").absolutePath
+
+    private fun isValid(file: File, spec: ModelFileSpec): Boolean {
+        if (!file.isFile || !file.canRead() || file.length() <= 0) return false
+        if (spec.expectedSize != null && file.length() != spec.expectedSize) return false
+
+        val metadataFile = metadataFile(file)
+        if (!metadataFile.isFile) {
+            // Preserve valid models downloaded by older application versions. New downloads
+            // always have metadata and receive full hash validation below.
+            return spec.sha256 == null || sha256(file).equals(spec.sha256, ignoreCase = true)
+        }
+        val metadata = Properties().apply {
+            FileInputStream(metadataFile).use(::load)
+        }
+        val recordedLength = metadata.getProperty("length")?.toLongOrNull() ?: return false
+        val recordedSha256 = metadata.getProperty("sha256") ?: return false
+        if (metadata.getProperty("url") != spec.url || recordedLength != file.length()) return false
+        if (spec.sha256 != null && !recordedSha256.equals(spec.sha256, ignoreCase = true)) return false
+        return sha256(file).equals(recordedSha256, ignoreCase = true)
     }
 
-    /**
-     * Checks if the Gemma 2 model is already downloaded.
-     */
-    fun isGemma2ModelDownloaded(context: Context): Boolean {
-        return File(context.cacheDir, "gemma-2-2b-it-Q4_K_M.gguf").exists()
+    private fun writeMetadata(file: File, url: String, length: Long, sha256: String) {
+        val temp = File(file.parentFile, "${file.name}.metadata.download")
+        val properties = Properties().apply {
+            setProperty("url", url)
+            setProperty("length", length.toString())
+            setProperty("sha256", sha256)
+        }
+        FileOutputStream(temp).use { output ->
+            properties.store(output, "ailia model download metadata")
+            output.fd.sync()
+        }
+        moveChecked(temp, metadataFile(file))
     }
 
-    /**
-     * Checks if the Gemma 3 model is already downloaded.
-     */
-    fun isGemma3ModelDownloaded(context: Context): Boolean {
-        return File(context.cacheDir, "gemma-3-4b-it-Q4_K_M.gguf").exists()
+    private fun moveChecked(source: File, destination: File) {
+        if (destination.exists() && !destination.delete()) {
+            error("Failed to replace ${destination.absolutePath}")
+        }
+        check(source.renameTo(destination)) {
+            "Failed to move ${source.absolutePath} to ${destination.absolutePath}"
+        }
     }
 
-    /**
-     * Checks if the Gemma 3 projector is already downloaded.
-     */
-    fun isGemma3ProjectorDownloaded(context: Context): Boolean {
-        return File(context.cacheDir, "gemma-3-4b-it-GGUF_mmproj-model-f16.gguf").exists()
+    private fun deleteInvalidArtifacts(file: File) {
+        listOf(file, metadataFile(file), File(file.parentFile, "${file.name}.download"), File(file.parentFile, "${file.name}.metadata.download"))
+            .filter(File::exists)
+            .forEach { artifact ->
+                if (!artifact.delete()) Log.w(TAG, "Failed to delete ${artifact.absolutePath}")
+            }
     }
 
-    /**
-     * Checks if the sample image is already downloaded.
-     */
-    fun isSampleImageDownloaded(context: Context): Boolean {
-        return File(context.cacheDir, "sample_image.jpg").exists()
+    private fun metadataFile(file: File): File = File(file.parentFile, "${file.name}.metadata")
+
+    private fun migrateLegacyCache(context: Context, directory: File, fileName: String) {
+        val destination = File(directory, fileName)
+        val legacy = File(context.cacheDir, fileName)
+        if (destination.exists() || !legacy.isFile || legacy.length() <= 0) return
+        try {
+            if (!legacy.renameTo(destination)) {
+                legacy.copyTo(destination, overwrite = false)
+                check(legacy.delete()) { "Failed to remove migrated cache file" }
+            }
+            Log.i(TAG, "Migrated model from cache: ${destination.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not migrate legacy cache model $fileName", e)
+        }
     }
 
-    /**
-     * Gets the path to the Gemma 2 model file.
-     */
-    fun getGemma2ModelPath(context: Context): String {
-        return File(context.cacheDir, "gemma-2-2b-it-Q4_K_M.gguf").absolutePath
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buffer = ByteArray(BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count > 0) digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().toHex()
     }
 
-    /**
-     * Gets the path to the Gemma 3 model file.
-     */
-    fun getGemma3ModelPath(context: Context): String {
-        return File(context.cacheDir, "gemma-3-4b-it-Q4_K_M.gguf").absolutePath
-    }
-
-    /**
-     * Gets the path to the Gemma 3 projector file.
-     */
-    fun getGemma3ProjectorPath(context: Context): String {
-        return File(context.cacheDir, "gemma-3-4b-it-GGUF_mmproj-model-f16.gguf").absolutePath
-    }
-
-    /**
-     * Gets the path to the sample image file.
-     */
-    fun getSampleImagePath(context: Context): String {
-        return File(context.cacheDir, "sample_image.jpg").absolutePath
+    private fun ByteArray.toHex(): String = joinToString("") {
+        String.format(Locale.ROOT, "%02x", it.toInt() and 0xFF)
     }
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import axip.ailia_llm.AiliaLLM
 import axip.ailia_llm.AiliaLLMChatMessage
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Available LLM models (URLs follow ailia-models-flutter: /gemma/<fileName>).
@@ -23,12 +24,14 @@ class AiliaLLMSample {
     private var lastResult: String = ""
     private var modelPath: String? = null
     private val conversationHistory = mutableListOf<AiliaLLMChatMessage>()
+    private val cancelRequested = AtomicBoolean(false)
 
     var modelType: LLMModelType = LLMModelType.GEMMA_4_E2B
 
     companion object {
         private const val TAG = "AiliaLLMSample"
         private const val N_CTX = 8192 // Context window size
+        private const val MAX_GENERATION_STEPS = 4096
     }
 
     interface LLMListener {
@@ -108,7 +111,9 @@ class AiliaLLMSample {
             return -1
         }
 
+        val historySizeBeforeRequest = conversationHistory.size
         return try {
+            cancelRequested.set(false)
             val startTime = System.nanoTime()
 
             // Add user message to conversation history
@@ -120,14 +125,27 @@ class AiliaLLMSample {
             // Generate response token by token
             val responseBuilder = StringBuilder()
             var done = false
+            var generationSteps = 0
 
-            while (!done) {
+            while (!done && !cancelRequested.get() && generationSteps < MAX_GENERATION_STEPS) {
                 done = llm!!.generate()
+                generationSteps++
                 val token = llm!!.getDeltaText()
                 if (token.isNotEmpty()) {
                     responseBuilder.append(token)
                     listener?.onToken(token)
                 }
+            }
+
+            if (cancelRequested.get()) {
+                while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
+                listener?.onError("Generation cancelled")
+                return -1
+            }
+            if (!done) {
+                while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
+                listener?.onError("Generation stopped after $MAX_GENERATION_STEPS steps")
+                return -1
             }
 
             val fullResponse = responseBuilder.toString()
@@ -145,10 +163,16 @@ class AiliaLLMSample {
             processingTime
 
         } catch (e: Exception) {
+            while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
             Log.e(TAG, "Failed to generate response: ${e.message}", e)
             listener?.onError("Failed to generate: ${e.message}")
             -1
         }
+    }
+
+    /** Requests the blocking generation loop to stop at the next token boundary. */
+    fun cancelGeneration() {
+        cancelRequested.set(true)
     }
 
     /**
@@ -195,6 +219,7 @@ class AiliaLLMSample {
      * Releases the LLM resources.
      */
     fun release() {
+        cancelGeneration()
         try {
             llm?.destroy()
         } catch (e: Exception) {

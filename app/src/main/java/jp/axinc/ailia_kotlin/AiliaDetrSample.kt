@@ -7,9 +7,6 @@ import android.util.Log
 import axip.ailia.Ailia
 import axip.ailia.AiliaModel
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.math.exp
 
 /**
@@ -17,9 +14,10 @@ import kotlin.math.exp
  * ailia-models(Python版 object_detection/detr)を移植:
  * ImageNet正規化(RGB, CHW)入力、出力logits/boxesをsoftmax+閾値0.7で検出に変換する。
  */
-class AiliaDetrSample {
+class AiliaDetrSample(private val modelDirectory: File) {
     companion object {
         private const val TAG = "AILIA_Main"
+        init { System.loadLibrary("ailia") }
         private const val MODEL_URL = "https://storage.googleapis.com/ailia-models/detr/detr-r50-e632da11.onnx"
         private const val MODEL_FILE = "detr-r50-e632da11.onnx"
         private const val PROTO_URL = "https://storage.googleapis.com/ailia-models/detr/detr-r50-e632da11.onnx.prototxt"
@@ -54,43 +52,12 @@ class AiliaDetrSample {
 
     private var ailia: AiliaModel? = null
     private var isInitialized = false
-    var modelDir: String = ""
-
-    private fun downloadFile(urlStr: String, fileName: String, listener: ModelDownloadListener? = null): Boolean {
-        val path = "$modelDir/$fileName"
-        val file = File(path)
-        if (file.exists() && file.canRead()) {
-            Log.i(TAG, "Model file already exists: $path (${file.length()} bytes)")
-            return true
-        }
-        file.parentFile?.mkdirs()
-        val tmpFile = File("$path.tmp")
-        val connection = URL(urlStr).openConnection() as HttpURLConnection
-        connection.connectTimeout = 30000
-        connection.readTimeout = 60000
-        connection.connect()
-        val totalBytes = connection.contentLengthLong
-        connection.inputStream.use { input ->
-            FileOutputStream(tmpFile).use { output ->
-                val buffer = ByteArray(8192)
-                var bytesDownloaded: Long = 0
-                var bytesRead: Int
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    output.write(buffer, 0, bytesRead)
-                    bytesDownloaded += bytesRead
-                    listener?.onProgress(fileName, bytesDownloaded, totalBytes)
-                }
-            }
-        }
-        tmpFile.renameTo(file)
-        return true
-    }
 
     fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
         return try {
             Log.i(TAG, "Starting DETR model download/check...")
-            downloadFile(PROTO_URL, PROTO_FILE, listener)
-            downloadFile(MODEL_URL, MODEL_FILE, listener)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(PROTO_URL, PROTO_FILE), listener) != null)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(MODEL_URL, MODEL_FILE), listener) != null)
             listener?.onComplete()
             true
         } catch (e: Exception) {
@@ -105,7 +72,12 @@ class AiliaDetrSample {
             release()
         }
         return try {
-            ailia = AiliaModel(envId, Ailia.MULTITHREAD_AUTO, "$modelDir/$PROTO_FILE", "$modelDir/$MODEL_FILE")
+            ailia = AiliaModel(
+                envId,
+                Ailia.MULTITHREAD_AUTO,
+                File(modelDirectory, PROTO_FILE).absolutePath,
+                File(modelDirectory, MODEL_FILE).absolutePath,
+            )
             try {
                 ailia!!.setInputShapeND(intArrayOf(1, 3, INPUT_SIZE, INPUT_SIZE))
                 // DETRのONNXは2番目の入力としてパディングマスク(1,H,W)を持つ
@@ -126,12 +98,19 @@ class AiliaDetrSample {
         }
     }
 
-    /** 物体検出を実行し、検出枠とラベルをcanvasに描画する */
+    /** Compatibility wrapper for the demo UI. Use [detect] when copying inference code. */
     fun processObjectDetection(bitmap: Bitmap, canvas: Canvas, paint: Paint, text: Paint, w: Int, h: Int): Long {
+        val result = detect(bitmap) ?: return -1
+        drawDetections(result.value, canvas, paint, text, w, h)
+        return result.processingTimeMs
+    }
+
+    /** Runs preprocessing, DETR inference and postprocessing without rendering. */
+    fun detect(bitmap: Bitmap, threshold: Float = THRESHOLD): ModelInferenceResult<List<DetectionResult>>? {
         val model = ailia
         if (!isInitialized || model == null) {
             Log.e(TAG, "DETR not initialized")
-            return -1
+            return null
         }
 
         return try {
@@ -139,6 +118,7 @@ class AiliaDetrSample {
             val scaled = Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true)
             val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
             scaled.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+            if (scaled !== bitmap) scaled.recycle()
             val plane = INPUT_SIZE * INPUT_SIZE
             val input = FloatArray(3 * plane)
             for (i in 0 until plane) {
@@ -182,65 +162,41 @@ class AiliaDetrSample {
             val endTime = System.nanoTime()
 
             if (logits == null || boxes == null) {
-                Log.e(TAG, "DETR: unexpected outputs")
-                return -1
+                error("DETR: unexpected outputs")
             }
-
-            // 後処理: softmax → score = 1 - P(no-object) → 閾値0.7
-            for (q in 0 until numQueries) {
-                val offset = q * numClasses
-                var maxLogit = Float.NEGATIVE_INFINITY
-                for (c in 0 until numClasses) {
-                    if (logits[offset + c] > maxLogit) maxLogit = logits[offset + c]
-                }
-                var sum = 0.0f
-                val probs = FloatArray(numClasses)
-                for (c in 0 until numClasses) {
-                    probs[c] = exp((logits[offset + c] - maxLogit).toDouble()).toFloat()
-                    sum += probs[c]
-                }
-                for (c in 0 until numClasses) probs[c] /= sum
-
-                val score = 1.0f - probs[numClasses - 1]
-                if (score <= THRESHOLD) continue
-
-                var label = 0
-                var maxProb = 0.0f
-                for (c in 0 until numClasses - 1) {
-                    if (probs[c] > maxProb) {
-                        maxProb = probs[c]
-                        label = c
-                    }
-                }
-
-                // box: cxcywh(正規化) → xyxy(ピクセル)
-                val cx = boxes[q * 4 + 0]
-                val cy = boxes[q * 4 + 1]
-                val bw = boxes[q * 4 + 2]
-                val bh = boxes[q * 4 + 3]
-                val x1 = ((cx - bw / 2).coerceIn(0f, 1f)) * w
-                val y1 = ((cy - bh / 2).coerceIn(0f, 1f)) * h
-                val x2 = ((cx + bw / 2).coerceIn(0f, 1f)) * w
-                val y2 = ((cy + bh / 2).coerceIn(0f, 1f)) * h
-
-                val catColor = CocoAndImageNetLabels.categoryColor(label, DETR_CATEGORY.size)
-                val boxPaint = Paint(paint).apply { color = catColor }
-                canvas.drawRect(x1, y1, x2, y2, boxPaint)
-
-                val name = if (label < DETR_CATEGORY.size) DETR_CATEGORY[label] else "class$label"
-                val labelText = "$name ${String.format("%.2f", maxProb)}"
-                val bgPaint = Paint().apply { style = Paint.Style.FILL; color = catColor }
-                canvas.drawRect(x1, y1 - text.textSize, x1 + text.measureText(labelText), y1 + text.textSize * 0.2f, bgPaint)
-                val labelPaint = Paint(text).apply { color = android.graphics.Color.WHITE }
-                canvas.drawText(labelText, x1, y1, labelPaint)
-
-                Log.i(TAG, "DETR: $name score=$score box=($x1,$y1)-($x2,$y2)")
-            }
-
-            (endTime - startTime) / 1000000
+            ModelInferenceResult(
+                decodeDetrOutputs(logits, boxes, numQueries, numClasses, threshold),
+                (endTime - startTime) / 1_000_000,
+            )
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to process DETR: ${e.javaClass.name}: ${e.message}")
-            -1
+            Log.e(TAG, "Failed to process DETR: ${e.javaClass.name}: ${e.message}", e)
+            null
+        }
+    }
+
+    fun drawDetections(
+        detections: List<DetectionResult>,
+        canvas: Canvas,
+        paint: Paint,
+        text: Paint,
+        w: Int,
+        h: Int,
+    ) {
+        for (detection in detections) {
+            val x1 = detection.x * w
+            val y1 = detection.y * h
+            val catColor = CategoryColors.forCategory(detection.category, DETR_CATEGORY.size)
+            canvas.drawRect(
+                x1,
+                y1,
+                (detection.x + detection.width) * w,
+                (detection.y + detection.height) * h,
+                Paint(paint).apply { color = catColor },
+            )
+            val name = DETR_CATEGORY.getOrElse(detection.category) { "class${detection.category}" }
+            val labelText = "$name ${String.format(java.util.Locale.ROOT, "%.2f", detection.confidence)}"
+            canvas.drawRect(x1, y1 - text.textSize, x1 + text.measureText(labelText), y1 + text.textSize * 0.2f, Paint().apply { style = Paint.Style.FILL; color = catColor })
+            canvas.drawText(labelText, x1, y1, Paint(text).apply { color = android.graphics.Color.WHITE })
         }
     }
 
@@ -255,4 +211,52 @@ class AiliaDetrSample {
             Log.i(TAG, "DETR released")
         }
     }
+}
+
+/** Pure DETR postprocessing kept outside the Android UI so it can be copied and unit-tested. */
+internal fun decodeDetrOutputs(
+    logits: FloatArray,
+    boxes: FloatArray,
+    numQueries: Int,
+    numClasses: Int,
+    threshold: Float,
+): List<DetectionResult> {
+    require(numQueries > 0 && numClasses > 1)
+    require(logits.size >= numQueries * numClasses)
+    require(boxes.size >= numQueries * 4)
+    val detections = mutableListOf<DetectionResult>()
+    for (query in 0 until numQueries) {
+        val offset = query * numClasses
+        var maxLogit = Float.NEGATIVE_INFINITY
+        for (category in 0 until numClasses) maxLogit = maxOf(maxLogit, logits[offset + category])
+        val probabilities = FloatArray(numClasses)
+        var sum = 0.0f
+        for (category in 0 until numClasses) {
+            probabilities[category] = exp((logits[offset + category] - maxLogit).toDouble()).toFloat()
+            sum += probabilities[category]
+        }
+        if (!sum.isFinite() || sum <= 0f) continue
+        var label = 0
+        var maxProbability = 0.0f
+        for (category in 0 until numClasses - 1) {
+            val probability = probabilities[category] / sum
+            if (probability > maxProbability) {
+                maxProbability = probability
+                label = category
+            }
+        }
+        if (maxProbability <= threshold) continue
+
+        val cx = boxes[query * 4]
+        val cy = boxes[query * 4 + 1]
+        val width = boxes[query * 4 + 2]
+        val height = boxes[query * 4 + 3]
+        val left = (cx - width / 2).coerceIn(0f, 1f)
+        val top = (cy - height / 2).coerceIn(0f, 1f)
+        val right = (cx + width / 2).coerceIn(0f, 1f)
+        val bottom = (cy + height / 2).coerceIn(0f, 1f)
+        if (right <= left || bottom <= top) continue
+        detections += DetectionResult(label, maxProbability, left, top, right - left, bottom - top)
+    }
+    return detections
 }

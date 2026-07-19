@@ -25,9 +25,11 @@ import axip.ailia_tflite.*
 import axip.ailia_llm.AiliaLLM
 import java.io.*
 import java.nio.ByteBuffer
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class MainActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
@@ -38,7 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var envSpinner: Spinner
     private lateinit var processingTimeTextView: TextView
     private lateinit var modelDownloadProgressBar: ProgressBar
-    private lateinit var resultScrollView: ScrollView
+    private lateinit var resultScrollView: FrameLayout
     private lateinit var classificationResultTextView: TextView
     private lateinit var tokenizerInputLabel: TextView
     private lateinit var tokenizerInputEditText: EditText
@@ -82,19 +84,20 @@ class MainActivity : AppCompatActivity() {
     private val speechTranscript = mutableListOf<String>()
     private var speechIntermediateText: String? = null
 
-    private var poseEstimatorSample = AiliaPoseEstimatorSample()
-    private var objectDetectionSample = AiliaTFLiteObjectDetectionSample()
-    private var classificationSample = AiliaTFLiteClassificationSample()
-    private var miniLMv2Sample = AiliaMiniLMv2Sample()
-    private var trackerSample = AiliaTrackerSample()
-    private var speechSample = AiliaSpeechSample()
-    private var voiceSample = AiliaVoiceSample()
-    private var llmSample = AiliaLLMSample()
-    private var multimodalLLMSample = AiliaMultimodalLLMSample()
-    private var onnxObjectDetectionSample = AiliaOnnxObjectDetectionSample()
-    private var onnxClassificationSample = AiliaOnnxClassificationSample()
-    private var u2netSample = AiliaU2NetSample()
-    private var detrSample = AiliaDetrSample()
+    private val modelDirectory by lazy { ModelDownloader.modelDirectory(this) }
+    private val poseEstimatorSample = AiliaPoseEstimatorSample()
+    private val objectDetectionSample = AiliaTFLiteObjectDetectionSample()
+    private val classificationSample by lazy { AiliaTFLiteClassificationSample(modelDirectory) }
+    private val miniLMv2Sample by lazy { AiliaMiniLMv2Sample(modelDirectory) }
+    private val trackerSample = AiliaTrackerSample()
+    private val speechSample by lazy { AiliaSpeechSample(modelDirectory) }
+    private val voiceSample by lazy { AiliaVoiceSample(modelDirectory) }
+    private val llmSample = AiliaLLMSample()
+    private val multimodalLLMSample = AiliaMultimodalLLMSample()
+    private val onnxObjectDetectionSample by lazy { AiliaOnnxObjectDetectionSample(modelDirectory) }
+    private val onnxClassificationSample by lazy { AiliaOnnxClassificationSample(modelDirectory) }
+    private val u2netSample by lazy { AiliaU2NetSample(modelDirectory) }
+    private val detrSample by lazy { AiliaDetrSample(modelDirectory) }
 
     // ObjectDetectionのONNXモデルとしてDETRを使うかどうか(falseならYOLOX)
     private var useDetr = false
@@ -111,6 +114,8 @@ class MainActivity : AppCompatActivity() {
     private var isWaitModeSwitch = AtomicBoolean(false)
     private var isStopCamera = AtomicBoolean(false)
     private var isDownloadingModel = AtomicBoolean(false)
+    private val operationGeneration = AtomicLong(0)
+    private val activityDestroyed = AtomicBoolean(false)
 
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
@@ -141,7 +146,7 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             if (speechSample.isMicRecording) {
                 val elapsedSec = (android.os.SystemClock.elapsedRealtime() - recStartMs) / 1000
-                waveformInfoTextView.text = "● REC %02d:%02d".format(elapsedSec / 60, elapsedSec % 60)
+                waveformInfoTextView.text = String.format(Locale.ROOT, "● REC %02d:%02d", elapsedSec / 60, elapsedSec % 60)
                 recTimerHandler.postDelayed(this, 500)
             }
         }
@@ -161,13 +166,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val REQUEST_CODE_PERMISSIONS = 10
-        private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        private const val REQUEST_CODE_CAMERA_PERMISSION = 10
+        private const val REQUEST_CODE_AUDIO_PERMISSION = 11
 
-        init {
-            System.loadLibrary("ailia")
-            System.loadLibrary("ailia_llm")
-        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -200,26 +201,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val modelDir = (getExternalFilesDir(null) ?: filesDir).absolutePath
-        onnxObjectDetectionSample.modelDir = modelDir
-        onnxClassificationSample.modelDir = modelDir
-        classificationSample.modelDir = modelDir
-        u2netSample.modelDir = modelDir
-        detrSample.modelDir = modelDir
-        miniLMv2Sample.modelDir = modelDir
-        speechSample.modelDir = modelDir
-        voiceSample.modelDir = modelDir
-
         initializeViews()
         adjustContentSizeForScreen()
         setupModeSelection()
         updateUIVisibility()
 
-        if (allPermissionsGranted()) {
-            initializeAilia()
-        } else {
-            ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
-        }
+        // Camera and microphone permissions are requested only when their feature is selected.
     }
 
     private fun initializeViews() {
@@ -737,7 +724,8 @@ class MainActivity : AppCompatActivity() {
         bitmap: Bitmap,
         canvas: Canvas,
         w: Int,
-        h: Int
+        h: Int,
+        tokenizerInput: String? = null,
     ): Long {
         val paint = Paint().apply {
             color = Color.WHITE
@@ -765,7 +753,7 @@ class MainActivity : AppCompatActivity() {
                     detrSample.processObjectDetection(bitmap, canvas, paint2, textPaint, w, h)
                 } else if (selectedRuntime == "ONNX") {
                     onnxObjectDetectionSample.processObjectDetection(
-                        img, bitmap, canvas, paint2, textPaint, w, h
+                        img, canvas, paint2, textPaint, w, h
                     )
                 } else {
                     objectDetectionSample.processObjectDetection(
@@ -778,14 +766,14 @@ class MainActivity : AppCompatActivity() {
                 if (selectedRuntime == "ONNX") {
                     val time = onnxClassificationSample.processClassification(img, w, h)
                     val result = onnxClassificationSample.getLastClassificationResult()
-                    runOnUiThread {
+                    runOnUiThreadIfActive {
                         classificationResultTextView.text = "Classification Result: $result"
                     }
                     time
                 } else {
                     val time = classificationSample.processClassification(bitmap)
                     val result = classificationSample.getLastClassificationResult()
-                    runOnUiThread {
+                    runOnUiThreadIfActive {
                         classificationResultTextView.text = "Classification Result: $result"
                     }
                     time
@@ -797,12 +785,11 @@ class MainActivity : AppCompatActivity() {
             }
 
             AlgorithmType.TOKENIZE -> {
-                val inputText =
-                    tokenizerInputEditText.text.toString().ifEmpty { "今日、新しいiPhoneが発売されました" }
+                val inputText = tokenizerInput.orEmpty().ifEmpty { "今日、新しいiPhoneが発売されました" }
                 val labels = listOf("スマートフォン", "エンタメ", "スポーツ", "政治", "科学")
                 val time = miniLMv2Sample.predict(inputText, labels)
                 val result = miniLMv2Sample.getLastResult()
-                runOnUiThread {
+                runOnUiThreadIfActive {
                     tokenizerOutputTextView.text = "Result:\n$result"
                 }
                 time
@@ -818,22 +805,22 @@ class MainActivity : AppCompatActivity() {
                         canvas, paint2, w, h, detectionResults
                     )
                     val trackingInfo = trackerSample.getLastTrackingResult()
-                    runOnUiThread {
+                    runOnUiThreadIfActive {
                         trackingResultTextView.text = "Tracking Results: $trackingInfo"
                     }
                     detectionTime + trackingTime
                 } else {
                     // First run object detection to get detection results without drawing
                     val detectionTime = objectDetectionSample.processObjectDetectionWithoutDrawing(
-                        bitmap, w, h, threshold = 0.1f, iou = 1.0f
+                        bitmap, threshold = 0.1f, iou = 1.0f
                     )
-                    val detectionResults = objectDetectionSample.getDetectionResults(bitmap)
+                    val detectionResults = objectDetectionSample.getDetectionResults()
                     // Then run tracking with the detection results and draw the tracking results
                     val trackingTime = trackerSample.processTrackingWithDetections(
                         canvas, paint2, w, h, detectionResults
                     )
                     val trackingInfo = trackerSample.getLastTrackingResult()
-                    runOnUiThread {
+                    runOnUiThreadIfActive {
                         trackingResultTextView.text = "Tracking Results: $trackingInfo"
                     }
                     detectionTime + trackingTime
@@ -1087,7 +1074,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun releaseCurrentAlgorithm() {
+    private fun releaseCurrentAlgorithm(includeSpeech: Boolean = true) {
         try {
             stopMicRecording(finalize = false)
             poseEstimatorSample.releasePoseEstimator()
@@ -1099,7 +1086,7 @@ class MainActivity : AppCompatActivity() {
             detrSample.release()
             miniLMv2Sample.release()
             trackerSample.releaseTracker()
-            speechSample.releaseSpeech()
+            if (includeSpeech) speechSample.releaseSpeech()
             voiceSample.releaseVoice()
             llmSample.release()
             multimodalLLMSample.release()
@@ -1139,12 +1126,17 @@ class MainActivity : AppCompatActivity() {
             }
 
             R.id.cameraRadioButton -> {
-                if (allPermissionsGranted()) {
+                if (hasPermission(Manifest.permission.CAMERA)) {
                     updateUIVisibility()
                     imageView.setImageBitmap(null)
                     startCamera()
                 } else {
                     Toast.makeText(this, "Camera permission required", Toast.LENGTH_SHORT).show()
+                    ActivityCompat.requestPermissions(
+                        this,
+                        arrayOf(Manifest.permission.CAMERA),
+                        REQUEST_CODE_CAMERA_PERMISSION,
+                    )
                     modeRadioGroup.check(R.id.imageRadioButton)
                 }
             }
@@ -1165,11 +1157,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
     ) {
-        if (!isDownloadingModel.compareAndSet(false, true)) return
-        processingTimeTextView.text = "Processing Time: -- ms"
+        val operationId = beginModelOperation() ?: return
+        runOnUiThreadIfActive {
+            if (isCurrentOperation(operationId)) {
+                processingTimeTextView.text = "Processing Time: -- ms"
+            }
+        }
         Log.i("AILIA_Main", "$logName: submitting download/init task")
 
         cameraExecutor.execute {
+            var initializationSucceeded = false
             try {
                 val downloaded = download(object : ModelDownloadListener {
                     override fun onProgress(
@@ -1178,7 +1175,9 @@ class MainActivity : AppCompatActivity() {
                         totalBytes: Long
                     ) {
                         Log.d("AILIA_Main", "$logName: downloading $fileName")
-                        runOnUiThread {
+                        if (!isCurrentOperation(operationId)) return
+                        runOnUiThreadIfActive {
+                            if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                             showModelDownloadProgress(bytesDownloaded, totalBytes)
                         }
                     }
@@ -1186,7 +1185,8 @@ class MainActivity : AppCompatActivity() {
                     override fun onComplete() = Unit
 
                     override fun onError(error: String) {
-                        runOnUiThread {
+                        runOnUiThreadIfActive {
+                            if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                             processingTimeTextView.text = "Download error: $error"
                             hideModelDownloadProgress()
                         }
@@ -1195,27 +1195,29 @@ class MainActivity : AppCompatActivity() {
                 Log.i("AILIA_Main", "$logName: download result=$downloaded")
                 if (!downloaded) return@execute
 
-                val success = initialize()
-                Log.i("AILIA_Main", "$logName: initialization result=$success")
-                isInitialized = success
-                isDownloadingModel.set(false)
-                runOnUiThread {
-                    if (success) {
+                initializationSucceeded = initialize()
+                Log.i("AILIA_Main", "$logName: initialization result=$initializationSucceeded")
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    isInitialized = initializationSucceeded
+                    if (initializationSucceeded) {
                         processingTimeTextView.text = "Processing Time: -- ms"
-                        onReady()
                     } else {
                         processingTimeTextView.text = "Initialization failed"
                     }
                 }
             } catch (e: Exception) {
                 Log.e("AILIA_Main", "$logName: download/init error", e)
-                runOnUiThread {
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                     processingTimeTextView.text = "Error: ${e.message}"
                 }
             } finally {
-                isDownloadingModel.set(false)
-                runOnUiThread {
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                     hideModelDownloadProgress()
+                    finishModelOperation(operationId)
+                    if (initializationSucceeded) onReady()
                 }
             }
         }
@@ -1403,44 +1405,49 @@ class MainActivity : AppCompatActivity() {
         modelDownloadProgressBar.progress = 0
     }
 
-    /** LLMモデルをダウンロード+初期化し、成功時にonReadyをUIスレッドで呼ぶ */
-    private fun initializeLLMAsync(onReady: (() -> Unit)? = null) {
-        llmStatusTextView.text = "Status: Initializing..."
-        processingTimeTextView.text = "Processing Time: -- ms"
-        llmSendButton.isEnabled = false
-        algorithmSpinner.isEnabled = false
-        llmSample.modelType = selectedLLMModelType
-        cameraExecutor.execute {
-            val success = llmSample.initialize(this@MainActivity, object : ModelDownloader.DownloadListener {
-                override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
-                    val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                    runOnUiThread {
-                        llmStatusTextView.text = "Status: Downloading model... $percent%"
-                        showModelDownloadProgress(bytesDownloaded, totalBytes)
-                    }
-                }
-                override fun onComplete(file: java.io.File) {
-                    Log.i("AILIA_Main", "Model download complete")
-                }
-                override fun onError(error: String) {
-                    runOnUiThread {
-                        llmStatusTextView.text = "Status: Download error - $error"
-                        hideModelDownloadProgress()
-                    }
-                }
-            })
-            runOnUiThread {
-                isInitialized = success
-                algorithmSpinner.isEnabled = true
-                hideModelDownloadProgress()
-                if (success) {
-                    llmStatusTextView.text = "Status: Ready"
-                    llmSendButton.isEnabled = true
-                    onReady?.invoke()
-                } else {
-                    llmStatusTextView.text = "Status: Initialization failed"
-                }
+    /** Prevents model/environment changes while a native model is being initialized or used. */
+    private fun beginModelOperation(): Long? {
+        if (!isDownloadingModel.compareAndSet(false, true)) return null
+        val operationId = operationGeneration.incrementAndGet()
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            setModelOperationControlsEnabled(false)
+        } else {
+            runOnUiThreadIfActive {
+                if (isCurrentOperation(operationId)) setModelOperationControlsEnabled(false)
             }
+        }
+        return operationId
+    }
+
+    private fun isCurrentOperation(operationId: Long): Boolean =
+        !activityDestroyed.get() && operationGeneration.get() == operationId
+
+    private fun finishModelOperation(operationId: Long) {
+        if (!isCurrentOperation(operationId)) return
+        isDownloadingModel.set(false)
+        setModelOperationControlsEnabled(true)
+    }
+
+    private fun setModelOperationControlsEnabled(enabled: Boolean) {
+        algorithmSpinner.isEnabled = enabled
+        modelSpinner.isEnabled = enabled
+        envSpinner.isEnabled = enabled
+        voiceEnvSpinner.isEnabled = enabled
+        modeRadioGroup.isEnabled = enabled
+        for (index in 0 until modeRadioGroup.childCount) {
+            modeRadioGroup.getChildAt(index).isEnabled = enabled
+        }
+        speechModeRadioGroup.isEnabled = enabled
+        speechLanguageSpinner.isEnabled = enabled
+        diarizationCheckBox.isEnabled = enabled
+        liveModeCheckBox.isEnabled = enabled && !diarizationCheckBox.isChecked
+        visionRunButton.isEnabled = enabled
+    }
+
+    private fun runOnUiThreadIfActive(action: () -> Unit) {
+        if (activityDestroyed.get()) return
+        runOnUiThread {
+            if (!activityDestroyed.get()) action()
         }
     }
 
@@ -1451,93 +1458,102 @@ class MainActivity : AppCompatActivity() {
                 llmStatusTextView.text = "Status: Please enter a message"
                 return@setOnClickListener
             }
-            // モデルダウンロードはSend押下時に行う
-            if (!isInitialized) {
-                initializeLLMAsync {
-                    performLLMChat(userInput)
-                }
-            } else {
-                performLLMChat(userInput)
-            }
+            performLLMChat(userInput)
         }
     }
 
     private fun performLLMChat(userInput: String) {
+        val operationId = beginModelOperation() ?: return
+        val needsInitialization = !isInitialized
+        val modelType = selectedLLMModelType
         llmSendButton.isEnabled = false
-        algorithmSpinner.isEnabled = false
-        llmStatusTextView.text = "Status: Generating..."
+        processingTimeTextView.text = "Processing Time: -- ms"
+        llmStatusTextView.text = if (needsInitialization) "Status: Initializing..." else "Status: Generating..."
         // チャット風表示: 履歴は消さず、ユーザー発言とAI応答の吹き出しを追加する
         addChatBubble(userInput, isUser = true)
         val assistantBubble = addChatBubble("", isUser = false)
         llmInputEditText.setText("")
 
         cameraExecutor.execute {
-            val processingTime = llmSample.chat(userInput, object : AiliaLLMSample.LLMListener {
-                override fun onToken(token: String) {
-                    runOnUiThread {
-                        assistantBubble.append(token)
-                        scrollResultToBottom()
-                    }
-                }
-                override fun onComplete(fullResponse: String) {
-                    runOnUiThread {
-                        llmStatusTextView.text = "Status: Complete"
-                    }
-                }
-                override fun onError(error: String) {
-                    runOnUiThread {
-                        llmStatusTextView.text = "Status: Error - $error"
-                    }
-                }
-            })
-            runOnUiThread {
-                llmSendButton.isEnabled = true
-                algorithmSpinner.isEnabled = true
-                if (processingTime > 0) {
-                    processingTimeTextView.text = "Processing Time: ${processingTime}ms"
-                }
-            }
-        }
-    }
+            try {
+                val initialized = if (needsInitialization) {
+                    llmSample.modelType = modelType
+                    llmSample.initialize(this@MainActivity, object : ModelDownloader.DownloadListener {
+                        override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
+                            if (!isCurrentOperation(operationId)) return
+                            val percent = if (totalBytes > 0) bytesDownloaded * 100 / totalBytes else 0
+                            runOnUiThreadIfActive {
+                                if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                                llmStatusTextView.text = "Status: Downloading model... $percent%"
+                                showModelDownloadProgress(bytesDownloaded, totalBytes)
+                            }
+                        }
 
-    /** MultimodalLLMモデルをダウンロード+初期化し、成功時にonReadyをUIスレッドで呼ぶ */
-    private fun initializeMultimodalAsync(onReady: (() -> Unit)? = null) {
-        llmStatusTextView.text = "Status: Initializing..."
-        processingTimeTextView.text = "Processing Time: -- ms"
-        llmSendButton.isEnabled = false
-        algorithmSpinner.isEnabled = false
-        cameraExecutor.execute {
-            val success = multimodalLLMSample.initialize(this@MainActivity, object : AiliaMultimodalLLMSample.MultimodalLLMListener {
-                override fun onDownloadProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                    val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                    runOnUiThread {
-                        llmStatusTextView.text = "Status: Downloading $fileName... $percent%"
-                        showModelDownloadProgress(bytesDownloaded, totalBytes)
-                    }
-                }
-                override fun onStatus(status: String) {}
-                override fun onToken(token: String) {}
-                override fun onComplete(fullResponse: String) {}
-                override fun onError(error: String) {
-                    runOnUiThread {
-                        llmStatusTextView.text = "Status: Error - $error"
-                        hideModelDownloadProgress()
-                    }
-                }
-            })
-            Log.i("AILIA_Main", "MultimodalLLM: init done on cameraExecutor, success=$success")
-            runOnUiThread {
-                isInitialized = success
-                algorithmSpinner.isEnabled = true
-                hideModelDownloadProgress()
-                if (success) {
-                    llmStatusTextView.text = "Status: Ready"
-                    llmSendButton.isEnabled = true
-                    // Load the sample image (image mode)
-                    loadSampleImageForMultimodal()
-                    onReady?.invoke()
+                        override fun onComplete(file: File) = Unit
+
+                        override fun onError(error: String) {
+                            runOnUiThreadIfActive {
+                                if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                                llmStatusTextView.text = "Status: Download error - $error"
+                            }
+                        }
+                    })
                 } else {
-                    llmStatusTextView.text = "Status: Initialization failed"
+                    true
+                }
+
+                if (!initialized || !isCurrentOperation(operationId)) {
+                    runOnUiThreadIfActive {
+                        if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                        isInitialized = false
+                        llmStatusTextView.text = "Status: Initialization failed"
+                        hideModelDownloadProgress()
+                        llmSendButton.isEnabled = true
+                        finishModelOperation(operationId)
+                    }
+                    return@execute
+                }
+
+                runOnUiThreadIfActive {
+                    if (isCurrentOperation(operationId)) llmStatusTextView.text = "Status: Generating..."
+                }
+                val processingTime = llmSample.chat(userInput, object : AiliaLLMSample.LLMListener {
+                    override fun onToken(token: String) {
+                        runOnUiThreadIfActive {
+                            if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                            assistantBubble.append(token)
+                            scrollResultToBottom()
+                        }
+                    }
+
+                    override fun onComplete(fullResponse: String) = Unit
+
+                    override fun onError(error: String) {
+                        runOnUiThreadIfActive {
+                            if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                            llmStatusTextView.text = "Status: Error - $error"
+                        }
+                    }
+                })
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    isInitialized = true
+                    llmSendButton.isEnabled = true
+                    hideModelDownloadProgress()
+                    if (processingTime >= 0) {
+                        llmStatusTextView.text = "Status: Complete"
+                        processingTimeTextView.text = "Processing Time: ${processingTime}ms"
+                    }
+                    finishModelOperation(operationId)
+                }
+            } catch (e: Exception) {
+                Log.e("AILIA_Main", "LLM request failed", e)
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    llmSendButton.isEnabled = true
+                    hideModelDownloadProgress()
+                    llmStatusTextView.text = "Status: Error - ${e.message}"
+                    finishModelOperation(operationId)
                 }
             }
         }
@@ -1550,75 +1566,110 @@ class MainActivity : AppCompatActivity() {
                 llmStatusTextView.text = "Status: Please enter a question about the image"
                 return@setOnClickListener
             }
-            // モデルダウンロードはSend押下時に行う
-            if (!isInitialized) {
-                initializeMultimodalAsync {
-                    performMultimodalChat(userInput)
-                }
-            } else {
-                performMultimodalChat(userInput)
-            }
+            performMultimodalChat(userInput)
         }
     }
 
     private fun performMultimodalChat(userInput: String) {
+            val operationId = beginModelOperation() ?: return
+            val needsInitialization = !isInitialized
             llmSendButton.isEnabled = false
-            algorithmSpinner.isEnabled = false
-            modeRadioGroup.isEnabled = false
-            for (i in 0 until modeRadioGroup.childCount) {
-                modeRadioGroup.getChildAt(i).isEnabled = false
-            }
-            llmStatusTextView.text = "Status: Generating..."
+            processingTimeTextView.text = "Processing Time: -- ms"
+            llmStatusTextView.text = if (needsInitialization) "Status: Initializing..." else "Status: Generating..."
             // チャット風表示: 履歴は消さず、ユーザー発言とAI応答の吹き出しを追加する
             addChatBubble(userInput, isUser = true)
             val assistantBubble = addChatBubble("", isUser = false)
             llmInputEditText.setText("")
 
             val isCameraMode = modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton
-            val imagePath = if (isCameraMode && latestCameraBitmap != null) {
-                val tmpFile = File(cacheDir, "camera_frame.png")
-                FileOutputStream(tmpFile).use { latestCameraBitmap!!.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                tmpFile.absolutePath
-            } else {
-                null
-            }
+            val cameraFrame = if (isCameraMode) latestCameraBitmap?.copy(Bitmap.Config.ARGB_8888, false) else null
 
-            Log.i("AILIA_Main", "MultimodalLLM Send: submitting chatWithImage to cameraExecutor, imagePath=$imagePath, userInput='$userInput'")
             cameraExecutor.execute {
-                Log.i("AILIA_Main", "MultimodalLLM Send: cameraExecutor task started, calling chatWithImage...")
-                val processingTime = multimodalLLMSample.chatWithImage(imagePath, userInput, object : AiliaMultimodalLLMSample.MultimodalLLMListener {
-                    override fun onDownloadProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {}
-                    override fun onStatus(status: String) {
-                        runOnUiThread {
-                            llmStatusTextView.text = "Status: $status"
+                try {
+                    val imagePath = cameraFrame?.let { bitmap ->
+                        try {
+                            val file = File(cacheDir, "camera_frame.png")
+                            FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                            file.absolutePath
+                        } finally {
+                            bitmap.recycle()
                         }
                     }
-                    override fun onToken(token: String) {
-                        runOnUiThread {
-                            assistantBubble.append(token)
-                            scrollResultToBottom()
+                    val listener = object : AiliaMultimodalLLMSample.MultimodalLLMListener {
+                        override fun onDownloadProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                            if (!isCurrentOperation(operationId)) return
+                            val percent = if (totalBytes > 0) bytesDownloaded * 100 / totalBytes else 0
+                            runOnUiThreadIfActive {
+                                if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                                llmStatusTextView.text = "Status: Downloading $fileName... $percent%"
+                                showModelDownloadProgress(bytesDownloaded, totalBytes)
+                            }
+                        }
+
+                        override fun onStatus(status: String) {
+                            runOnUiThreadIfActive {
+                                if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                                llmStatusTextView.text = "Status: $status"
+                            }
+                        }
+
+                        override fun onToken(token: String) {
+                            runOnUiThreadIfActive {
+                                if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                                assistantBubble.append(token)
+                                scrollResultToBottom()
+                            }
+                        }
+
+                        override fun onComplete(fullResponse: String) = Unit
+
+                        override fun onError(error: String) {
+                            runOnUiThreadIfActive {
+                                if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                                llmStatusTextView.text = "Status: Error - $error"
+                            }
                         }
                     }
-                    override fun onComplete(fullResponse: String) {
-                        runOnUiThread {
+
+                    val initialized = if (needsInitialization) {
+                        multimodalLLMSample.initialize(this@MainActivity, listener)
+                    } else {
+                        true
+                    }
+                    if (!initialized || !isCurrentOperation(operationId)) {
+                        runOnUiThreadIfActive {
+                            if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                            isInitialized = false
+                            llmStatusTextView.text = "Status: Initialization failed"
+                            llmSendButton.isEnabled = true
+                            hideModelDownloadProgress()
+                            finishModelOperation(operationId)
+                        }
+                        return@execute
+                    }
+
+                    val processingTime = multimodalLLMSample.chatWithImage(imagePath, userInput, listener)
+                    runOnUiThreadIfActive {
+                        if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                        isInitialized = true
+                        llmSendButton.isEnabled = true
+                        hideModelDownloadProgress()
+                        if (processingTime >= 0) {
                             llmStatusTextView.text = "Status: Complete"
+                            processingTimeTextView.text = "Processing Time: ${processingTime}ms"
                         }
+                        if (needsInitialization) loadSampleImageForMultimodal()
+                        finishModelOperation(operationId)
                     }
-                    override fun onError(error: String) {
-                        runOnUiThread {
-                            llmStatusTextView.text = "Status: Error - $error"
-                        }
-                    }
-                })
-                runOnUiThread {
-                    llmSendButton.isEnabled = true
-                    algorithmSpinner.isEnabled = true
-                    modeRadioGroup.isEnabled = true
-                    for (i in 0 until modeRadioGroup.childCount) {
-                        modeRadioGroup.getChildAt(i).isEnabled = true
-                    }
-                    if (processingTime > 0) {
-                        processingTimeTextView.text = "Processing Time: ${processingTime}ms"
+                } catch (e: Exception) {
+                    Log.e("AILIA_Main", "Multimodal LLM request failed", e)
+                    cameraFrame?.takeUnless(Bitmap::isRecycled)?.recycle()
+                    runOnUiThreadIfActive {
+                        if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                        llmSendButton.isEnabled = true
+                        hideModelDownloadProgress()
+                        llmStatusTextView.text = "Status: Error - ${e.message}"
+                        finishModelOperation(operationId)
                     }
                 }
             }
@@ -1651,76 +1702,102 @@ class MainActivity : AppCompatActivity() {
                 voiceStatusTextView.text = "Status: Please enter text to speak"
                 return@setOnClickListener
             }
+            val operationId = beginModelOperation() ?: return@setOnClickListener
+            val needsInitialization = !isInitialized
+            val modelType = selectedVoiceModelType
+            val envId = selectedEnvId
             voiceGenerateButton.isEnabled = false
             voiceResultTextView.text = ""
             voiceWaveformView.clear()
             voiceStatusTextView.text =
-                if (isInitialized) "Status: Generating..." else "Status: Initializing..."
-            if (!isInitialized) {
+                if (needsInitialization) "Status: Initializing..." else "Status: Generating..."
+            if (needsInitialization) {
                 processingTimeTextView.text = "Processing Time: -- ms"
             }
 
             cameraExecutor.execute {
-                // モデルダウンロード+初期化はGenerate押下時に行う
-                if (!isInitialized) {
-                    voiceSample.modelType = selectedVoiceModelType
-                    val success = voiceSample.initializeVoice(envId = selectedEnvId, listener = object : ModelDownloadListener {
-                        override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
-                            val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
-                            runOnUiThread {
-                                voiceStatusTextView.text = "Status: Downloading $fileName... $percent%"
-                                showModelDownloadProgress(bytesDownloaded, totalBytes)
+                try {
+                    // モデルダウンロード+初期化はGenerate押下時に行う
+                    val initialized = if (needsInitialization) {
+                        voiceSample.modelType = modelType
+                        voiceSample.initializeVoice(envId = envId, listener = object : ModelDownloadListener {
+                            override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                                if (!isCurrentOperation(operationId)) return
+                                val percent = if (totalBytes > 0) bytesDownloaded * 100 / totalBytes else 0
+                                runOnUiThreadIfActive {
+                                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                                    voiceStatusTextView.text = "Status: Downloading $fileName... $percent%"
+                                    showModelDownloadProgress(bytesDownloaded, totalBytes)
+                                }
                             }
-                        }
-                        override fun onComplete() {
-                            Log.i("AILIA_Main", "Voice model download complete")
-                        }
-                        override fun onError(error: String) {
-                            runOnUiThread {
-                                voiceStatusTextView.text = "Status: Error - $error"
-                                hideModelDownloadProgress()
+
+                            override fun onComplete() = Unit
+
+                            override fun onError(error: String) {
+                                runOnUiThreadIfActive {
+                                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                                    voiceStatusTextView.text = "Status: Error - $error"
+                                }
                             }
-                        }
-                    })
-                    isInitialized = success
-                    if (!success) {
-                        runOnUiThread {
+                        })
+                    } else {
+                        true
+                    }
+                    if (!initialized || !isCurrentOperation(operationId)) {
+                        runOnUiThreadIfActive {
+                            if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                            isInitialized = false
                             voiceGenerateButton.isEnabled = true
                             voiceStatusTextView.text = "Status: Initialization failed"
                             hideModelDownloadProgress()
+                            finishModelOperation(operationId)
                         }
                         return@execute
                     }
-                    runOnUiThread {
+                    runOnUiThreadIfActive {
+                        if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                         voiceStatusTextView.text = "Status: Generating..."
                         hideModelDownloadProgress()
                     }
-                }
 
-                val refAudio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.reference_audio_girl))
-                // 入力テキストの日英を判定してG2Pの言語を切り替える
-                val textLang = AiliaVoiceSample.detectLanguage(inputText)
-                val inferenceTime = voiceSample.textToSpeech(
-                    refAudio.audioData,
-                    refAudio.channels,
-                    refAudio.sampleRate,
-                    "水をマレーシアから買わなくてはならない。",
-                    "ja",
-                    inputText,
-                    textLang,
-                )
-                runOnUiThread {
-                    voiceGenerateButton.isEnabled = true
-                    voiceStatusTextView.text = "Status: Complete"
-                    voiceResultTextView.text = "${selectedVoiceModelType.displayName} Generated"
-                    if (inferenceTime > 0) {
-                        processingTimeTextView.text = "Processing Time: ${inferenceTime}ms"
+                    val refAudio = AudioUtil().loadRawAudio(resources.openRawResource(R.raw.reference_audio_girl))
+                    // 入力テキストの日英を判定してG2Pの言語を切り替える
+                    val textLang = AiliaVoiceSample.detectLanguage(inputText)
+                    val inferenceTime = voiceSample.textToSpeech(
+                        refAudio.audioData,
+                        refAudio.channels,
+                        refAudio.sampleRate,
+                        "水をマレーシアから買わなくてはならない。",
+                        "ja",
+                        inputText,
+                        textLang,
+                    )
+                    runOnUiThreadIfActive {
+                        if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                        isInitialized = true
+                        voiceGenerateButton.isEnabled = true
+                        if (inferenceTime >= 0) {
+                            voiceStatusTextView.text = "Status: Complete"
+                            voiceResultTextView.text = "${modelType.displayName} Generated"
+                            processingTimeTextView.text = "Processing Time: ${inferenceTime}ms"
+                        } else {
+                            voiceStatusTextView.text = "Status: Generation failed"
+                        }
+                        // 合成音声の波形を再生位置に追従して表示する
+                        voiceSample.lastAudioData?.let { audio ->
+                            voiceWaveformView.startPlayback(audio, voiceSample.lastAudioChannels, voiceSample.lastAudioSampleRate)
+                            voiceReplayButton.visibility = View.VISIBLE
+                        }
+                        finishModelOperation(operationId)
                     }
-                    // 合成音声の波形を再生位置に追従して表示する
-                    voiceSample.lastAudioData?.let { audio ->
-                        voiceWaveformView.startPlayback(audio, voiceSample.lastAudioChannels, voiceSample.lastAudioSampleRate)
-                        // 生成後はリプレイボタンを表示する
-                        voiceReplayButton.visibility = View.VISIBLE
+                } catch (e: Exception) {
+                    Log.e("AILIA_Main", "Voice request failed", e)
+                    runOnUiThreadIfActive {
+                        if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                        voiceGenerateButton.isEnabled = true
+                        hideModelDownloadProgress()
+                        voiceStatusTextView.text = "Status: Error - ${e.message}"
+                        finishModelOperation(operationId)
                     }
                 }
             }
@@ -1876,26 +1953,30 @@ class MainActivity : AppCompatActivity() {
             onReady()
             return
         }
-        if (isDownloadingModel.get()) return
-        isDownloadingModel.set(true)
+        val operationId = beginModelOperation() ?: return
         val isMicMode = speechModeRadioGroup.checkedRadioButtonId == R.id.micRadioButton
         // LIVEフラグはLive Modeチェックボックスで有効化(マイクモード時のみ)
         val liveMode = isMicMode && liveModeCheckBox.isChecked
+        val modelType = selectedSpeechModelType
+        val envId = selectedEnvId
+        val language = if (isMicMode) selectedSpeechLanguage else "auto"
         processingTimeTextView.text = "Processing Time: -- ms"
         speechRunButton.isEnabled = false
         micRecordButton.isEnabled = false
         speechExecutor.execute {
             try {
-                val downloaded = speechSample.downloadModel(selectedSpeechModelType, object : ModelDownloadListener {
+                val downloaded = speechSample.downloadModel(modelType, object : ModelDownloadListener {
                     override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                         Log.d("AILIA_Main", "Speech: downloading $fileName")
-                        runOnUiThread {
+                        runOnUiThreadIfActive {
+                            if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                             showModelDownloadProgress(bytesDownloaded, totalBytes)
                         }
                     }
                     override fun onComplete() {}
                     override fun onError(error: String) {
-                        runOnUiThread {
+                        runOnUiThreadIfActive {
+                            if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                             processingTimeTextView.text = "Download error: $error"
                             hideModelDownloadProgress()
                         }
@@ -1904,17 +1985,17 @@ class MainActivity : AppCompatActivity() {
                 var success = false
                 if (downloaded) {
                     // Wavモードは常にauto、Micモードのみ言語選択を適用する
-                    val language = if (isMicMode) selectedSpeechLanguage else "auto"
-                    Log.i("AILIA_Main", "Speech: initializing with envId=$selectedEnvId, liveMode=$liveMode, language=$language")
+                    Log.i("AILIA_Main", "Speech: initializing with envId=$envId, liveMode=$liveMode, language=$language")
                     speechSample.language = language
-                    success = speechSample.initializeSpeech(selectedEnvId, liveMode = liveMode)
-                    isInitialized = success
+                    success = speechSample.initializeSpeech(envId, liveMode = liveMode)
                 }
-                isDownloadingModel.set(false)
-                runOnUiThread {
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    isInitialized = success
                     speechRunButton.isEnabled = true
                     micRecordButton.isEnabled = true
                     hideModelDownloadProgress()
+                    finishModelOperation(operationId)
                     if (success) {
                         processingTimeTextView.text = "Processing Time: -- ms"
                         onReady()
@@ -1924,11 +2005,12 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 Log.e("AILIA_Main", "Speech: download/init error", e)
-                isDownloadingModel.set(false)
-                runOnUiThread {
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                     speechRunButton.isEnabled = true
                     micRecordButton.isEnabled = true
                     hideModelDownloadProgress()
+                    finishModelOperation(operationId)
                     processingTimeTextView.text = "Error: ${e.message}"
                 }
             }
@@ -1953,7 +2035,7 @@ class MainActivity : AppCompatActivity() {
                         val lines = speechSample.process(audio.audioData, audio.channels, audio.sampleRate)
                         val endTime = System.nanoTime()
                         val timeMs = (endTime - startTime) / 1000000
-                        runOnUiThread {
+                        runOnUiThreadIfActive {
                             appendTranscriptLines(lines)
                             classificationResultTextView.text =
                                 if (lines.isEmpty()) "Speech Result: (no speech detected)" else "Speech Result:"
@@ -1961,11 +2043,11 @@ class MainActivity : AppCompatActivity() {
                         }
                     } catch (e: Exception) {
                         Log.e("AILIA_Main", "Speech run error", e)
-                        runOnUiThread {
+                        runOnUiThreadIfActive {
                             classificationResultTextView.text = "Speech Result: Error - ${e.message}"
                         }
                     } finally {
-                        runOnUiThread {
+                        runOnUiThreadIfActive {
                             speechRunButton.isEnabled = true
                         }
                     }
@@ -1996,27 +2078,27 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_CODE_PERMISSIONS)
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_CODE_AUDIO_PERMISSION)
             return
         }
 
         val started = speechSample.startMicRecording(object : AiliaSpeechSample.MicRecordingListener {
             override fun onWaveform(samples: FloatArray, sampleRate: Int) {
                 val blocks = WaveformView.peakBlocks(samples, samples.size, sampleRate)
-                runOnUiThread {
+                runOnUiThreadIfActive {
                     waveformView.push(blocks)
                 }
             }
 
             override fun onIntermediateResult(text: String) {
-                runOnUiThread {
+                runOnUiThreadIfActive {
                     showIntermediateTranscript(text)
                     classificationResultTextView.text = "Recording..."
                 }
             }
 
             override fun onResult(lines: List<String>, isFinal: Boolean) {
-                runOnUiThread {
+                runOnUiThreadIfActive {
                     appendTranscriptLines(lines)
                     if (isFinal) {
                         speechIntermediateText = null
@@ -2032,7 +2114,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onError(error: String) {
-                runOnUiThread {
+                runOnUiThreadIfActive {
                     Log.e("AILIA_Main", "Microphone recording error: $error")
                     classificationResultTextView.text = "Speech Result: Error - $error"
                     if (!speechSample.isMicRecording) {
@@ -2062,7 +2144,7 @@ class MainActivity : AppCompatActivity() {
         if (speechSample.isMicRecording) {
             speechSample.stopMicRecording(finalize)
             recTimerHandler.removeCallbacks(recTimerRunnable)
-            runOnUiThread {
+            runOnUiThreadIfActive {
                 micRecordButton.text = "Record"
                 micRecordButton.isEnabled = !finalize
                 waveformInfoTextView.text = ""
@@ -2151,19 +2233,21 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (isProcessing.get()) {
-            return
-        }
+        if (!isProcessing.compareAndSet(false, true)) return
+        val tokenizerInput = tokenizerInputEditText.text.toString()
+        setModelOperationControlsEnabled(false)
+        cameraExecutor.execute { runImageModeInference(tokenizerInput) }
+    }
 
-        isProcessing.set(true)
-
+    /** Runs bundled-model initialization and still-image inference away from the UI thread. */
+    private fun runImageModeInference(tokenizerInput: String) {
         try {
             if (!isInitialized) {
                 initializeAilia()
             }
 
             if (!isInitialized) {
-                runOnUiThread {
+                runOnUiThreadIfActive {
                     processingTimeTextView.text = "Initialization failed"
                 }
                 return
@@ -2181,25 +2265,9 @@ class MainActivity : AppCompatActivity() {
             bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(img))
 
             val canvas = Canvas(bitmap)
-            val paint = Paint().apply {
-                color = Color.WHITE
-            }
+            val processingTime = processAlgorithm(img, personBmp, canvas, w, h, tokenizerInput)
 
-            val paint2 = Paint().apply {
-                style = Paint.Style.STROKE
-                color = Color.RED
-                strokeWidth = 5f
-            }
-
-            val textPaint = Paint().apply {
-                color = Color.BLACK
-                textSize = 50f
-                isAntiAlias = true
-            }
-
-            val processingTime = processAlgorithm(img, personBmp, canvas, w, h)
-
-            runOnUiThread {
+            runOnUiThreadIfActive {
                 if (currentAlgorithm != AlgorithmType.TOKENIZE) {
                     imageView.setImageBitmap(bitmap)
                 }
@@ -2219,20 +2287,21 @@ class MainActivity : AppCompatActivity() {
 
         } catch (e: Exception) {
             Log.e("AILIA_Error", "Error in image mode: ${e.message}")
-            runOnUiThread {
+            runOnUiThreadIfActive {
                 processingTimeTextView.text = "Processing Error: ${e.message}"
             }
         } finally {
             isProcessing.set(false)
-
-            pendingAlgorithmSwitch?.let { pendingAlgorithm ->
-                pendingAlgorithmSwitch = null
-                executeAlgorithmSwitch(pendingAlgorithm)
-            }
-
-            pendingModeSwitch?.let { pendingMode ->
-                pendingModeSwitch = null
-                executeModeSwitch(pendingMode)
+            runOnUiThreadIfActive {
+                if (!isDownloadingModel.get()) setModelOperationControlsEnabled(true)
+                pendingAlgorithmSwitch?.let { pendingAlgorithm ->
+                    pendingAlgorithmSwitch = null
+                    executeAlgorithmSwitch(pendingAlgorithm)
+                }
+                pendingModeSwitch?.let { pendingMode ->
+                    pendingModeSwitch = null
+                    executeModeSwitch(pendingMode)
+                }
             }
         }
     }
@@ -2342,10 +2411,10 @@ class MainActivity : AppCompatActivity() {
 
                 val processingTime = processAlgorithm(img, bitmap, canvas, w, h)
 
-                runOnUiThread {
+                runOnUiThreadIfActive {
                     // Stop押下後に処理中だったフレームの結果で表示を上書きしない
                     if (needsVisionRunButton() && !runRequested) {
-                        return@runOnUiThread
+                        return@runOnUiThreadIfActive
                     }
                     if (currentAlgorithm == AlgorithmType.MULTIMODAL_LLM) {
                         latestCameraBitmap = camera_bitmap
@@ -2377,7 +2446,7 @@ class MainActivity : AppCompatActivity() {
                 pendingAlgorithmSwitch?.let { pendingAlgorithm ->
                     pendingAlgorithmSwitch = null
                     isWaitAlgorithmSwitch.set(true)
-                    runOnUiThread {
+                    runOnUiThreadIfActive {
                         executeAlgorithmSwitch(pendingAlgorithm)
                         isWaitAlgorithmSwitch.set(false)
                     }
@@ -2386,7 +2455,7 @@ class MainActivity : AppCompatActivity() {
                 pendingModeSwitch?.let { pendingMode ->
                     pendingModeSwitch = null
                     isWaitModeSwitch.set(true)
-                    runOnUiThread {
+                    runOnUiThreadIfActive {
                         executeModeSwitch(pendingMode)
                         isWaitModeSwitch.set(false)
                     }
@@ -2395,31 +2464,45 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
-        ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
-    }
+    private fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     override fun onRequestPermissionsResult(
         requestCode: Int, permissions: Array<String>, grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_CODE_PERMISSIONS) {
-            if (allPermissionsGranted()) {
-                initializeAilia()
+        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        when (requestCode) {
+            REQUEST_CODE_CAMERA_PERMISSION -> if (granted) {
+                modeRadioGroup.check(R.id.cameraRadioButton)
             } else {
-                Toast.makeText(this, "Permissions not granted by the user.", Toast.LENGTH_SHORT)
-                    .show()
-                finish()
+                Toast.makeText(this, "Camera permission was not granted.", Toast.LENGTH_SHORT).show()
+            }
+            REQUEST_CODE_AUDIO_PERMISSION -> if (granted) {
+                startMicRecording()
+            } else {
+                Toast.makeText(this, "Microphone permission was not granted.", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        activityDestroyed.set(true)
+        operationGeneration.incrementAndGet()
+        isDownloadingModel.set(false)
+        llmSample.cancelGeneration()
+        multimodalLLMSample.cancelGeneration()
+        recTimerHandler.removeCallbacksAndMessages(null)
         stopMicRecording(finalize = false)
-        releaseCurrentAlgorithm()
-        cameraExecutor.shutdown()
+        stopCamera()
+
+        // Native objects are released after already queued work on the same executor.
+        // This avoids destroying a model while its inference call is still running.
+        speechExecutor.execute { speechSample.releaseSpeech() }
         speechExecutor.shutdown()
+        cameraExecutor.execute { releaseCurrentAlgorithm(includeSpeech = false) }
+        cameraExecutor.shutdown()
+        super.onDestroy()
     }
 
     @Throws(IOException::class)
@@ -2427,9 +2510,10 @@ class MainActivity : AppCompatActivity() {
         val bout = ByteArrayOutputStream()
         BufferedOutputStream(bout).use { out ->
             val buf = ByteArray(128)
-            var n = 0
-            while (`in`.read(buf).also { n = it } > 0) {
-                out.write(buf, 0, n)
+            while (true) {
+                val count = `in`.read(buf)
+                if (count <= 0) break
+                out.write(buf, 0, count)
             }
         }
         return bout.toByteArray()

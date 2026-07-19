@@ -11,16 +11,15 @@ import axip.ailia_voice.AiliaVoice.Companion.AILIA_VOICE_G2P_TYPE_GPT_SOVITS_JA
 import axip.ailia_voice.AiliaVoice.Companion.AILIA_VOICE_G2P_TYPE_GPT_SOVITS_ZH
 
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Build
 import kotlin.math.roundToInt
 
 enum class VoiceModelType(val displayName: String, val defaultText: String) {
@@ -32,11 +31,9 @@ enum class VoiceModelType(val displayName: String, val defaultText: String) {
     GPT_SOVITS_V2_PRO_DISTILL_JA("GPT-SoVITS V2-Pro Distill JA", "こんにちは。今日はいい天気ですね。"),
 }
 
-class AiliaVoiceSample {
+class AiliaVoiceSample(private val modelDirectory: File) {
     companion object {
         private const val TAG = "AILIA_Main"
-        private var voice: AiliaVoice? = null
-        private var isInitialized = false
 
         /**
          * 入力テキストが日本語か英語かを判定してG2Pの言語("ja"/"en")を返す。
@@ -55,8 +52,10 @@ class AiliaVoiceSample {
         }
     }
 
+    private var voice: AiliaVoice? = null
+    private var isInitialized = false
+    private var audioTrack: AudioTrack? = null
     var modelType: VoiceModelType = VoiceModelType.GPT_SOVITS_V1
-    var modelDir: String = ""
     private var downloadListener: ModelDownloadListener? = null
 
     // 直近の合成結果(波形表示用)
@@ -68,38 +67,9 @@ class AiliaVoiceSample {
         private set
 
     private fun download(link: String, name: String): String {
-        val dir: String = modelDir
-        val path: String = "$dir/$name"
-        try {
-            if (File(path).exists()) {
-                return path
-            }
-            File(path).parentFile?.mkdirs()
-            val tmpFile = File("$path.tmp")
-            val url = URL(link)
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 30000
-            connection.readTimeout = 60000
-            connection.connect()
-            val totalBytes = connection.contentLengthLong
-            connection.inputStream.use { input ->
-                FileOutputStream(tmpFile).use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesDownloaded: Long = 0
-                    var bytesRead: Int
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        bytesDownloaded += bytesRead
-                        downloadListener?.onProgress(name, bytesDownloaded, totalBytes)
-                    }
-                }
-            }
-            tmpFile.renameTo(File(path))
-        } catch (e: Exception) {
-            Log.e("AILIA_Main", "Model Download Failed: $name", e)
-            return ""
-        }
-        return path
+        val file = ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(link, name), downloadListener)
+            ?: error("Model download failed: $name")
+        return file.absolutePath
     }
 
     private fun downloadFiles(baseUrl: String, prefix: String, files: List<String>) {
@@ -238,7 +208,7 @@ class AiliaVoiceSample {
             Log.i(TAG, "Initializing voice with envId=$envId")
             voice = AiliaVoice(envId = envId)
 
-            val dir: String = modelDir
+            val dir = modelDirectory.absolutePath
             voice?.setUserDictionaryFile(path = "${dir}/user.dict", AILIA_VOICE_DICTIONARY_TYPE_OPEN_JTALK)
             voice?.openDictionaryFile(path = dir, dictionaryType = AILIA_VOICE_DICTIONARY_TYPE_OPEN_JTALK)
             voice?.openDictionaryFile(path = dir, dictionaryType = AILIA_VOICE_DICTIONARY_TYPE_G2P_EN)
@@ -326,6 +296,7 @@ class AiliaVoiceSample {
     }
 
     fun releaseVoice() {
+        releaseAudioTrack()
         try {
             voice?.close()
         } catch (e: Exception) {
@@ -376,11 +347,12 @@ class AiliaVoiceSample {
         } catch (e: Exception) {
             Log.e(TAG, "Exception during sample execution", e)
         }
-        return 0
+        return -1
     }
 
     fun playAudio(waveBuffer: FloatArray, channels: Int, samplingRate: Int) {
         try {
+            releaseAudioTrack()
             val channelConfig = if (channels == 1)
                 AudioFormat.CHANNEL_OUT_MONO
             else
@@ -397,40 +369,70 @@ class AiliaVoiceSample {
             )
             val bufferSize = maxOf(minBuffer, pcm16.size * 2)
 
-            val audioTrack = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
+            val track = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(samplingRate)
+                            .setChannelMask(channelConfig)
+                            .build()
+                    )
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .setBufferSizeInBytes(bufferSize)
+                    .build()
+            } else {
+                @Suppress("DEPRECATION")
+                AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    samplingRate,
+                    channelConfig,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize,
+                    AudioTrack.MODE_STATIC,
                 )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(samplingRate)
-                        .setChannelMask(channelConfig)
-                        .build()
-                )
-                .setTransferMode(AudioTrack.MODE_STATIC)
-                .setBufferSizeInBytes(bufferSize)
-                .build()
+            }
+            audioTrack = track
 
-            val written = audioTrack.write(pcm16, 0, pcm16.size)
+            val written = track.write(pcm16, 0, pcm16.size)
             Log.d(TAG, "Wrote $written samples")
-            audioTrack.setVolume(1.0f)
-            audioTrack.setNotificationMarkerPosition(pcm16.size)
-            audioTrack.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
-                override fun onMarkerReached(track: AudioTrack?) {
+            check(written == pcm16.size) { "AudioTrack write failed: $written/${pcm16.size}" }
+            track.setVolume(1.0f)
+            track.setNotificationMarkerPosition(pcm16.size / channels.coerceAtLeast(1))
+            track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                override fun onMarkerReached(completedTrack: AudioTrack?) {
                     Log.d(TAG, "Track Finish")
-                    track?.stop()
-                    track?.release()
+                    if (audioTrack === completedTrack) releaseAudioTrack()
                 }
 
-                override fun onPeriodicNotification(track: AudioTrack?) {}
+                override fun onPeriodicNotification(completedTrack: AudioTrack?) {}
             })
-            audioTrack.play()
+            track.play()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to play wave: ${e.message}", e)
+            releaseAudioTrack()
+        }
+    }
+
+    @Synchronized
+    private fun releaseAudioTrack() {
+        val track = audioTrack ?: return
+        audioTrack = null
+        try {
+            if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop AudioTrack: ${e.message}")
+        }
+        try {
+            track.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release AudioTrack: ${e.message}")
         }
     }
 }
