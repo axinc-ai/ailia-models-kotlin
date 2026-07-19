@@ -285,6 +285,31 @@
                 android:layout_marginBottom="8dp"
                 android:visibility="gone" />
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/speakerRegisterButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:layout_marginBottom="8dp"
+                    android:text="Add Speaker"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/speakerReferencePlayButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:enabled="false"
+                    android:text="Play"
+                    android:visibility="gone" />
+            </LinearLayout>
+
             <RadioGroup
                 android:id="@+id/speakerInputModeRadioGroup"
                 android:layout_width="match_parent"
@@ -309,14 +334,6 @@
             </RadioGroup>
 
             <Button
-                android:id="@+id/speakerSelectWavButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:text="Select Wav (default sample)"
-                android:visibility="gone" />
-
-            <Button
                 android:id="@+id/speakerVerifyButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -324,35 +341,13 @@
                 android:text="Verify"
                 android:visibility="gone" />
 
-            <TextView
-                android:id="@+id/speakerEnrollmentLabel"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="4dp"
-                android:text="Enroll your voice:"
-                android:textColor="?android:attr/textColorPrimary"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:visibility="gone" />
-
-            <EditText
-                android:id="@+id/speakerNameEditText"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="4dp"
-                android:hint="Speaker name"
-                android:importantForAutofill="no"
-                android:inputType="textPersonName"
-                android:textColor="?android:attr/textColorPrimary"
-                android:textColorHint="?android:attr/textColorSecondary"
-                android:visibility="gone" />
-
             <Button
-                android:id="@+id/speakerRegisterButton"
+                android:id="@+id/speakerReverifyButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:text="Record and Register"
+                android:layout_marginBottom="12dp"
+                android:enabled="false"
+                android:text="Run Again"
                 android:visibility="gone" />
 
             <TextView
@@ -371,6 +366,15 @@
                 android:layout_width="match_parent"
                 android:layout_height="100dp"
                 android:layout_marginBottom="8dp"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/speakerInputPlayButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:enabled="false"
+                android:text="Play"
                 android:visibility="gone" />
 
             <Button

@@ -1,7 +1,6 @@
 package jp.axinc.ailia_kotlin
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -10,12 +9,10 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.os.Bundle
-import android.net.Uri
 import android.util.Log
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -81,12 +78,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var speakerProfileLabel: TextView
     private lateinit var speakerProfileSpinner: Spinner
     private lateinit var speakerInputModeRadioGroup: RadioGroup
-    private lateinit var speakerSelectWavButton: Button
     private lateinit var speakerVerifyButton: Button
-    private lateinit var speakerEnrollmentLabel: TextView
-    private lateinit var speakerNameEditText: EditText
+    private lateinit var speakerReverifyButton: Button
     private lateinit var speakerRegisterButton: Button
+    private lateinit var speakerReferencePlayButton: Button
     private lateinit var speakerWaveformView: WaveformView
+    private lateinit var speakerInputPlayButton: Button
     private lateinit var speakerStatusTextView: TextView
     private lateinit var speakerResultTextView: TextView
     private lateinit var voiceFilterInputWaveformLabel: TextView
@@ -169,10 +166,13 @@ class MainActivity : AppCompatActivity() {
         val name: String,
         val embedding: FloatArray? = null,
         val presetRawResource: Int? = null,
+        val profileId: String? = null,
     )
 
     private enum class SpeakerRecordingPurpose { VERIFY, ENROLL }
+    private enum class SpeakerPlayback { REFERENCE, INPUT }
     private enum class VoiceFilterRecordingPurpose { FILTER, ENROLL }
+    private enum class VoiceFilterPlayback { REFERENCE, BEFORE, AFTER }
     private enum class PendingAudioAction {
         SPEECH,
         SPEAKER_VERIFY,
@@ -183,45 +183,18 @@ class MainActivity : AppCompatActivity() {
 
     private var speakerReferences = emptyList<SpeakerReference>()
     private var presetSpeakerEmbedding: FloatArray? = null
-    private var selectedSpeakerWavUri: Uri? = null
     private var speakerRecordingPurpose: SpeakerRecordingPurpose? = null
+    private var lastSpeakerMicAudio: FloatArray? = null
+    private var lastSpeakerMicSampleRate = SpeakerVerificationAudio.SAMPLE_RATE
+    private var speakerPlayback: SpeakerPlayback? = null
     private var voiceFilterReferences = emptyList<SpeakerReference>()
     private var presetVoiceFilterEmbedding: FloatArray? = null
-    private var selectedVoiceFilterWavUri: Uri? = null
     private var voiceFilterRecordingPurpose: VoiceFilterRecordingPurpose? = null
+    private var lastVoiceFilterMicAudio: FloatArray? = null
+    private var lastVoiceFilterMicSampleRate = VoiceFilterAudio.SAMPLE_RATE
     private var latestVoiceFilterResult: VoiceFilterResult? = null
+    private var voiceFilterPlayback: VoiceFilterPlayback? = null
     private var pendingAudioAction: PendingAudioAction? = null
-
-    private val speakerWavPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            selectedSpeakerWavUri = uri
-            try {
-                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (_: SecurityException) {
-                // Some document providers grant access only for the current Activity lifetime.
-            }
-            if (::speakerSelectWavButton.isInitialized) {
-                speakerSelectWavButton.text = "Selected: ${uri.lastPathSegment ?: "Wav file"}"
-                speakerStatusTextView.text = "Status: Press Verify"
-            }
-        }
-    }
-
-    private val voiceFilterWavPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            selectedVoiceFilterWavUri = uri
-            try {
-                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (_: SecurityException) {
-                // Some document providers grant access only for the current Activity lifetime.
-            }
-            if (::speakerSelectWavButton.isInitialized && currentAlgorithm == AlgorithmType.VOICE_FILTER) {
-                speakerSelectWavButton.text = "Selected: ${uri.lastPathSegment ?: "Wav file"}"
-                speakerStatusTextView.text = "Status: Press Filter"
-                clearVoiceFilterResult()
-            }
-        }
-    }
 
     // マイク録音のREC経過時間表示用
     private val recTimerHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -341,12 +314,12 @@ class MainActivity : AppCompatActivity() {
         speakerProfileLabel = findViewById(R.id.speakerProfileLabel)
         speakerProfileSpinner = findViewById(R.id.speakerProfileSpinner)
         speakerInputModeRadioGroup = findViewById(R.id.speakerInputModeRadioGroup)
-        speakerSelectWavButton = findViewById(R.id.speakerSelectWavButton)
         speakerVerifyButton = findViewById(R.id.speakerVerifyButton)
-        speakerEnrollmentLabel = findViewById(R.id.speakerEnrollmentLabel)
-        speakerNameEditText = findViewById(R.id.speakerNameEditText)
+        speakerReverifyButton = findViewById(R.id.speakerReverifyButton)
         speakerRegisterButton = findViewById(R.id.speakerRegisterButton)
+        speakerReferencePlayButton = findViewById(R.id.speakerReferencePlayButton)
         speakerWaveformView = findViewById(R.id.speakerWaveformView)
+        speakerInputPlayButton = findViewById(R.id.speakerInputPlayButton)
         speakerStatusTextView = findViewById(R.id.speakerStatusTextView)
         speakerResultTextView = findViewById(R.id.speakerResultTextView)
         voiceFilterInputWaveformLabel = findViewById(R.id.voiceFilterInputWaveformLabel)
@@ -713,7 +686,7 @@ class MainActivity : AppCompatActivity() {
             }
             AlgorithmType.VOICE_FILTER -> {
                 selectedRuntime = "ONNX"
-                arrayOf("VoiceFilter + d-vector embedder")
+                arrayOf("VoiceFilter + d-vector embedder + Silero VAD v6")
             }
         }
 
@@ -1028,12 +1001,12 @@ class MainActivity : AppCompatActivity() {
         speakerProfileLabel,
         speakerProfileSpinner,
         speakerInputModeRadioGroup,
-        speakerSelectWavButton,
         speakerVerifyButton,
-        speakerEnrollmentLabel,
-        speakerNameEditText,
+        speakerReverifyButton,
         speakerRegisterButton,
+        speakerReferencePlayButton,
         speakerWaveformView,
+        speakerInputPlayButton,
         speakerStatusTextView,
         speakerResultTextView,
         voiceFilterInputWaveformLabel,
@@ -1109,22 +1082,26 @@ class MainActivity : AppCompatActivity() {
             voiceWaveformView,
         )
 
-        val speakerVerificationViews = setOf<View>(
+        val speakerAudioViews = setOf<View>(
             resultScrollView,
             speakerProfileLabel,
             speakerProfileSpinner,
             speakerInputModeRadioGroup,
-            speakerSelectWavButton,
             speakerVerifyButton,
-            speakerEnrollmentLabel,
-            speakerNameEditText,
             speakerRegisterButton,
+            speakerReferencePlayButton,
             speakerWaveformView,
             speakerStatusTextView,
             speakerResultTextView,
         )
 
-        val voiceFilterViews = speakerVerificationViews + setOf<View>(
+        val speakerVerificationViews = speakerAudioViews + setOf<View>(
+            speakerReverifyButton,
+            speakerInputPlayButton,
+        )
+
+        val voiceFilterViews = speakerAudioViews + setOf<View>(
+            speakerReverifyButton,
             voiceFilterInputWaveformLabel,
             voiceFilterPlayInputButton,
             voiceFilterOutputWaveformLabel,
@@ -1240,7 +1217,10 @@ class MainActivity : AppCompatActivity() {
         voiceWaveformView.clear()
         speakerWaveformView.clear()
         voiceFilterOutputWaveformView.clear()
+        weSpeakerSample.stopPlayback()
+        speakerPlayback = null
         voiceFilterSample.stopPlayback()
+        voiceFilterPlayback = null
         latestVoiceFilterResult = null
         waveformInfoTextView.text = ""
         clearTranscript()
@@ -1668,12 +1648,22 @@ class MainActivity : AppCompatActivity() {
         for (index in 0 until speakerInputModeRadioGroup.childCount) {
             speakerInputModeRadioGroup.getChildAt(index).isEnabled = enabled
         }
-        speakerSelectWavButton.isEnabled = enabled
         speakerVerifyButton.isEnabled = enabled
-        speakerNameEditText.isEnabled = enabled
+        speakerReverifyButton.isEnabled = enabled && when (currentAlgorithm) {
+            AlgorithmType.SPEAKER_VERIFICATION ->
+                speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerMicRadioButton &&
+                    lastSpeakerMicAudio != null
+            AlgorithmType.VOICE_FILTER ->
+                speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerMicRadioButton &&
+                    lastVoiceFilterMicAudio != null
+            else -> false
+        }
         speakerRegisterButton.isEnabled = enabled
-        voiceFilterPlayInputButton.isEnabled = enabled && latestVoiceFilterResult != null
-        voiceFilterPlayOutputButton.isEnabled = enabled && latestVoiceFilterResult != null
+        when (currentAlgorithm) {
+            AlgorithmType.SPEAKER_VERIFICATION -> updateSpeakerPlaybackButtons(enabled)
+            AlgorithmType.VOICE_FILTER -> updateVoiceFilterPlaybackButtons(enabled)
+            else -> Unit
+        }
     }
 
     private fun runOnUiThreadIfActive(action: () -> Unit) {
@@ -2178,22 +2168,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupSpeakerVerificationControls() {
         speakerProfileLabel.text = "Reference speaker:"
-        speakerEnrollmentLabel.text = "Enroll your voice:"
-        speakerSelectWavButton.text = selectedSpeakerWavUri?.let {
-            "Selected: ${it.lastPathSegment ?: "Wav file"}"
-        } ?: "Select Wav (default sample)"
+        speakerRegisterButton.text = "Add Speaker"
         speakerResultTextView.text = "Distance: --"
         speakerProfileSpinner.onItemSelectedListener = null
         refreshSpeakerProfiles()
+        speakerProfileSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                stopSpeakerPlayback(status = null)
+                updateSpeakerPlaybackButtons()
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                stopSpeakerPlayback(status = null)
+                updateSpeakerPlaybackButtons()
+            }
+        }
         speakerInputModeRadioGroup.setOnCheckedChangeListener { _, _ ->
+            stopSpeakerPlayback(status = null)
             if (weSpeakerSample.isRecording) {
                 weSpeakerSample.cancelRecording()
                 resetSpeakerRecordingUi()
             }
             updateSpeakerInputVisibility()
-        }
-        speakerSelectWavButton.setOnClickListener {
-            speakerWavPicker.launch(arrayOf("audio/wav", "audio/x-wav", "audio/*"))
         }
         speakerVerifyButton.setOnClickListener {
             if (weSpeakerSample.isRecording) {
@@ -2211,6 +2207,21 @@ class MainActivity : AppCompatActivity() {
                 ensureWeSpeakerReady { verifySelectedSpeakerWav() }
             }
         }
+        speakerReverifyButton.setOnClickListener {
+            if (weSpeakerSample.isRecording || isDownloadingModel.get()) {
+                return@setOnClickListener
+            }
+            val audio = lastSpeakerMicAudio
+            if (audio == null) {
+                speakerStatusTextView.text = "Status: Record microphone audio first"
+                updateSpeakerInputVisibility()
+                return@setOnClickListener
+            }
+            ensureWeSpeakerReady {
+                speakerWaveformView.showAudio(audio)
+                performSpeakerVerification(audio, 1, lastSpeakerMicSampleRate)
+            }
+        }
         speakerRegisterButton.setOnClickListener {
             if (weSpeakerSample.isRecording) {
                 if (speakerRecordingPurpose == SpeakerRecordingPurpose.ENROLL) {
@@ -2222,6 +2233,20 @@ class MainActivity : AppCompatActivity() {
             }
             if (isDownloadingModel.get()) return@setOnClickListener
             ensureWeSpeakerReady { startSpeakerRecording(SpeakerRecordingPurpose.ENROLL) }
+        }
+        speakerReferencePlayButton.setOnClickListener {
+            if (speakerPlayback == SpeakerPlayback.REFERENCE) {
+                stopSpeakerPlayback("Status: Playback stopped")
+            } else {
+                startSpeakerPlayback(SpeakerPlayback.REFERENCE)
+            }
+        }
+        speakerInputPlayButton.setOnClickListener {
+            if (speakerPlayback == SpeakerPlayback.INPUT) {
+                stopSpeakerPlayback("Status: Playback stopped")
+            } else {
+                startSpeakerPlayback(SpeakerPlayback.INPUT)
+            }
         }
         updateSpeakerInputVisibility()
     }
@@ -2235,7 +2260,11 @@ class MainActivity : AppCompatActivity() {
                 presetRawResource = R.raw.wespeaker_00001_spk1,
             )
         ) + customProfiles.map { profile ->
-            SpeakerReference(profile.name, profile.embedding)
+            SpeakerReference(
+                name = profile.name,
+                embedding = profile.embedding,
+                profileId = profile.id,
+            )
         }
         val adapter = ArrayAdapter(
             this,
@@ -2253,9 +2282,117 @@ class MainActivity : AppCompatActivity() {
     private fun updateSpeakerInputVisibility() {
         if (currentAlgorithm != AlgorithmType.SPEAKER_VERIFICATION) return
         val wavMode = speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton
-        speakerSelectWavButton.visibility = if (wavMode) View.VISIBLE else View.GONE
         if (!weSpeakerSample.isRecording) {
             speakerVerifyButton.text = if (wavMode) "Verify Wav" else "Record and Verify"
+        }
+        val canReverify = !wavMode && lastSpeakerMicAudio != null && !weSpeakerSample.isRecording
+        speakerReverifyButton.visibility = if (canReverify) View.VISIBLE else View.GONE
+        speakerReverifyButton.isEnabled = canReverify && !isDownloadingModel.get()
+        updateSpeakerPlaybackButtons()
+    }
+
+    private fun startSpeakerPlayback(playback: SpeakerPlayback) {
+        stopSpeakerPlayback(status = null, restoreWaveform = false)
+        val reference = speakerReferences.getOrNull(speakerProfileSpinner.selectedItemPosition)
+        val audio = try {
+            when (playback) {
+                SpeakerPlayback.REFERENCE -> loadReferenceAudio(
+                    checkNotNull(reference) { "Select a reference speaker" },
+                    speakerProfileStore,
+                )
+                SpeakerPlayback.INPUT -> loadSpeakerInputAudio()
+            }
+        } catch (e: Exception) {
+            speakerStatusTextView.text = "Status: ${e.message}"
+            updateSpeakerPlaybackButtons()
+            return
+        }
+
+        if (playback == SpeakerPlayback.INPUT) {
+            speakerWaveformView.startPlayback(audio.audioData, audio.channels, audio.sampleRate)
+        }
+        speakerPlayback = playback
+        updateSpeakerPlaybackButtons()
+        speakerStatusTextView.text = when (playback) {
+            SpeakerPlayback.REFERENCE -> "Status: Playing reference speaker"
+            SpeakerPlayback.INPUT -> if (
+                speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton
+            ) {
+                "Status: Playing default WAV"
+            } else {
+                "Status: Playing recorded voice"
+            }
+        }
+        try {
+            weSpeakerSample.playAudio(audio.audioData, audio.sampleRate) {
+                runOnUiThreadIfActive {
+                    if (speakerPlayback == playback) {
+                        stopSpeakerPlayback("Status: Playback complete")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            stopSpeakerPlayback("Status: Playback error - ${e.message}")
+        }
+    }
+
+    private fun stopSpeakerPlayback(
+        status: String?,
+        restoreWaveform: Boolean = true,
+    ) {
+        weSpeakerSample.stopPlayback()
+        speakerWaveformView.stopPlayback()
+        speakerPlayback = null
+        if (restoreWaveform) {
+            runCatching { loadSpeakerInputAudio() }.getOrNull()?.let { audio ->
+                speakerWaveformView.showAudio(audio.audioData, audio.channels)
+            }
+        }
+        updateSpeakerPlaybackButtons()
+        if (status != null && currentAlgorithm == AlgorithmType.SPEAKER_VERIFICATION) {
+            speakerStatusTextView.text = status
+        }
+    }
+
+    private fun updateSpeakerPlaybackButtons(controlsEnabled: Boolean = !isDownloadingModel.get()) {
+        val hasReference =
+            speakerReferences.getOrNull(speakerProfileSpinner.selectedItemPosition) != null
+        val hasInput =
+            speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton ||
+                lastSpeakerMicAudio != null
+        when (speakerPlayback) {
+            SpeakerPlayback.REFERENCE -> {
+                speakerReferencePlayButton.text = "Stop"
+                speakerReferencePlayButton.isEnabled = true
+                speakerInputPlayButton.text = "Play"
+                speakerInputPlayButton.isEnabled = false
+            }
+            SpeakerPlayback.INPUT -> {
+                speakerReferencePlayButton.text = "Play"
+                speakerReferencePlayButton.isEnabled = false
+                speakerInputPlayButton.text = "Stop"
+                speakerInputPlayButton.isEnabled = true
+            }
+            null -> {
+                speakerReferencePlayButton.text = "Play"
+                speakerReferencePlayButton.isEnabled = controlsEnabled && hasReference
+                speakerInputPlayButton.text = "Play"
+                speakerInputPlayButton.isEnabled = controlsEnabled && hasInput
+            }
+        }
+    }
+
+    private fun loadSpeakerInputAudio(): AudioUtil.WavFileData {
+        return if (speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton) {
+            AudioUtil().loadRawAudio(resources.openRawResource(R.raw.wespeaker_00024_spk1))
+        } else {
+            AudioUtil.WavFileData(
+                sampleRate = lastSpeakerMicSampleRate,
+                channels = 1,
+                audioData = checkNotNull(lastSpeakerMicAudio) {
+                    "Record microphone audio first"
+                },
+            )
         }
     }
 
@@ -2315,17 +2452,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun verifySelectedSpeakerWav() {
         val audio = try {
-            val stream = selectedSpeakerWavUri?.let { contentResolver.openInputStream(it) }
-                ?: resources.openRawResource(R.raw.wespeaker_00024_spk1)
-            AudioUtil().loadRawAudio(stream)
+            AudioUtil().loadRawAudio(resources.openRawResource(R.raw.wespeaker_00024_spk1))
         } catch (e: Exception) {
             speakerStatusTextView.text = "Status: WAV error - ${e.message}"
             return
         }
+        speakerWaveformView.showAudio(audio.audioData, audio.channels)
         performSpeakerVerification(audio.audioData, audio.channels, audio.sampleRate)
     }
 
     private fun performSpeakerVerification(audio: FloatArray, channels: Int, sampleRate: Int) {
+        stopSpeakerPlayback(status = null)
         val reference = speakerReferences.getOrNull(speakerProfileSpinner.selectedItemPosition)
         if (reference == null) {
             speakerStatusTextView.text = "Status: Select a reference speaker"
@@ -2394,6 +2531,7 @@ class MainActivity : AppCompatActivity() {
         }
         pendingAudioAction = null
         speakerRecordingPurpose = purpose
+        stopSpeakerPlayback(status = null, restoreWaveform = false)
         speakerWaveformView.clear()
         val started = weSpeakerSample.startRecording(object : AiliaWeSpeakerSample.RecordingListener {
             override fun onWaveform(samples: FloatArray, sampleRate: Int) {
@@ -2404,15 +2542,15 @@ class MainActivity : AppCompatActivity() {
             override fun onCompleted(audio: FloatArray, sampleRate: Int) {
                 when (purpose) {
                     SpeakerRecordingPurpose.VERIFY -> runOnUiThreadIfActive {
+                        lastSpeakerMicAudio = audio.copyOf()
+                        lastSpeakerMicSampleRate = sampleRate
+                        speakerWaveformView.showAudio(audio)
                         resetSpeakerRecordingUi()
                         performSpeakerVerification(audio, 1, sampleRate)
                     }
                     SpeakerRecordingPurpose.ENROLL -> {
                         runOnUiThreadIfActive {
-                            val requestedName = speakerNameEditText.text.toString().trim()
-                            val name = requestedName.ifEmpty {
-                                "My Voice ${speakerProfileStore.list().size + 1}"
-                            }
+                            val name = "My Voice ${speakerProfileStore.list().size + 1}"
                             resetSpeakerRecordingUi()
                             performSpeakerEnrollment(name, audio, sampleRate)
                         }
@@ -2431,6 +2569,7 @@ class MainActivity : AppCompatActivity() {
             // Keep only the active Stop button enabled so a model/environment switch
             // cannot release native objects while AudioRecord is still producing data.
             setModelOperationControlsEnabled(false)
+            speakerReverifyButton.visibility = View.GONE
             speakerStatusTextView.text = "Status: Recording (press Stop when finished)"
             if (purpose == SpeakerRecordingPurpose.VERIFY) {
                 speakerVerifyButton.isEnabled = true
@@ -2450,11 +2589,10 @@ class MainActivity : AppCompatActivity() {
         speechExecutor.execute {
             try {
                 val result = weSpeakerSample.extractEmbedding(audio, 1, sampleRate)
-                val profile = speakerProfileStore.save(name, result.embedding)
+                val profile = speakerProfileStore.save(name, result.embedding, audio, sampleRate)
                 runOnUiThreadIfActive {
                     if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                     refreshSpeakerProfiles(profile.id)
-                    speakerNameEditText.setText("")
                     speakerStatusTextView.text = "Status: Registered ${profile.name}"
                     speakerResultTextView.text = String.format(
                         Locale.ROOT,
@@ -2484,22 +2622,29 @@ class MainActivity : AppCompatActivity() {
     private fun resetSpeakerRecordingUi() {
         speakerRecordingPurpose = null
         if (!isDownloadingModel.get()) setModelOperationControlsEnabled(true)
-        speakerRegisterButton.text = "Record and Register"
+        speakerRegisterButton.text = "Add Speaker"
         updateSpeakerInputVisibility()
     }
 
     private fun setupVoiceFilterControls() {
-        speakerProfileLabel.text = "Target speaker:"
-        speakerEnrollmentLabel.text = "Enroll your voice for VoiceFilter:"
-        speakerSelectWavButton.text = selectedVoiceFilterWavUri?.let {
-            "Selected: ${it.lastPathSegment ?: "Wav file"}"
-        } ?: "Select Wav (default mixed sample)"
+        speakerProfileLabel.text = "Reference speaker:"
+        speakerRegisterButton.text = "Add Speaker"
         refreshVoiceFilterProfiles()
         clearVoiceFilterResult()
 
         speakerProfileSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 clearVoiceFilterResult()
+                if (speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerMicRadioButton) {
+                    lastVoiceFilterMicAudio?.let { speakerWaveformView.showAudio(it) }
+                }
+                val referenceName = voiceFilterReferences.getOrNull(position)?.name
+                speakerStatusTextView.text = if (referenceName != null) {
+                    "Status: Reference changed to $referenceName"
+                } else {
+                    "Status: Select a reference speaker"
+                }
+                updateVoiceFilterInputVisibility()
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -2511,10 +2656,19 @@ class MainActivity : AppCompatActivity() {
                 resetVoiceFilterRecordingUi()
             }
             clearVoiceFilterResult()
+            val micMode =
+                speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerMicRadioButton
+            if (micMode) {
+                lastVoiceFilterMicAudio?.let { speakerWaveformView.showAudio(it) }
+                speakerStatusTextView.text = if (lastVoiceFilterMicAudio != null) {
+                    "Status: Previous Mic audio is ready"
+                } else {
+                    "Status: Ready to record"
+                }
+            } else {
+                speakerStatusTextView.text = "Status: Ready to filter the default WAV"
+            }
             updateVoiceFilterInputVisibility()
-        }
-        speakerSelectWavButton.setOnClickListener {
-            voiceFilterWavPicker.launch(arrayOf("audio/wav", "audio/x-wav", "audio/*"))
         }
         speakerVerifyButton.setOnClickListener {
             if (voiceFilterSample.isRecording) {
@@ -2532,6 +2686,26 @@ class MainActivity : AppCompatActivity() {
                 ensureVoiceFilterReady { filterSelectedVoiceFilterWav() }
             }
         }
+        speakerReverifyButton.setOnClickListener {
+            if (voiceFilterSample.isRecording || isDownloadingModel.get()) {
+                return@setOnClickListener
+            }
+            val audio = lastVoiceFilterMicAudio
+            if (audio == null) {
+                speakerStatusTextView.text = "Status: Record microphone audio first"
+                updateVoiceFilterInputVisibility()
+                return@setOnClickListener
+            }
+            ensureVoiceFilterReady {
+                speakerWaveformView.showAudio(audio)
+                performVoiceFiltering(
+                    audio,
+                    channels = 1,
+                    sampleRate = lastVoiceFilterMicSampleRate,
+                    applyVad = true,
+                )
+            }
+        }
         speakerRegisterButton.setOnClickListener {
             if (voiceFilterSample.isRecording) {
                 if (voiceFilterRecordingPurpose == VoiceFilterRecordingPurpose.ENROLL) {
@@ -2544,26 +2718,25 @@ class MainActivity : AppCompatActivity() {
             if (isDownloadingModel.get()) return@setOnClickListener
             ensureVoiceFilterReady { startVoiceFilterRecording(VoiceFilterRecordingPurpose.ENROLL) }
         }
+        speakerReferencePlayButton.setOnClickListener {
+            if (voiceFilterPlayback == VoiceFilterPlayback.REFERENCE) {
+                stopVoiceFilterPlayback("Status: Playback stopped")
+            } else {
+                startVoiceFilterPlayback(VoiceFilterPlayback.REFERENCE)
+            }
+        }
         voiceFilterPlayInputButton.setOnClickListener {
-            val result = latestVoiceFilterResult ?: return@setOnClickListener
-            try {
-                speakerWaveformView.startPlayback(result.inputAudio, 1, result.sampleRate)
-                voiceFilterOutputWaveformView.showAudio(result.outputAudio)
-                voiceFilterSample.playAudio(result.inputAudio, result.sampleRate)
-                speakerStatusTextView.text = "Status: Playing before filtering"
-            } catch (e: Exception) {
-                speakerStatusTextView.text = "Status: Playback error - ${e.message}"
+            if (voiceFilterPlayback == VoiceFilterPlayback.BEFORE) {
+                stopVoiceFilterPlayback("Status: Playback stopped")
+            } else {
+                startVoiceFilterPlayback(VoiceFilterPlayback.BEFORE)
             }
         }
         voiceFilterPlayOutputButton.setOnClickListener {
-            val result = latestVoiceFilterResult ?: return@setOnClickListener
-            try {
-                speakerWaveformView.showAudio(result.inputAudio)
-                voiceFilterOutputWaveformView.startPlayback(result.outputAudio, 1, result.sampleRate)
-                voiceFilterSample.playAudio(result.outputAudio, result.sampleRate)
-                speakerStatusTextView.text = "Status: Playing after filtering"
-            } catch (e: Exception) {
-                speakerStatusTextView.text = "Status: Playback error - ${e.message}"
+            if (voiceFilterPlayback == VoiceFilterPlayback.AFTER) {
+                stopVoiceFilterPlayback("Status: Playback stopped")
+            } else {
+                startVoiceFilterPlayback(VoiceFilterPlayback.AFTER)
             }
         }
         updateVoiceFilterInputVisibility()
@@ -2578,7 +2751,11 @@ class MainActivity : AppCompatActivity() {
                 presetRawResource = R.raw.voicefilter_ref_voice,
             )
         ) + customProfiles.map { profile ->
-            SpeakerReference(profile.name, profile.embedding)
+            SpeakerReference(
+                name = profile.name,
+                embedding = profile.embedding,
+                profileId = profile.id,
+            )
         }
         val adapter = ArrayAdapter(
             this,
@@ -2596,10 +2773,13 @@ class MainActivity : AppCompatActivity() {
     private fun updateVoiceFilterInputVisibility() {
         if (currentAlgorithm != AlgorithmType.VOICE_FILTER) return
         val wavMode = speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton
-        speakerSelectWavButton.visibility = if (wavMode) View.VISIBLE else View.GONE
         if (!voiceFilterSample.isRecording) {
             speakerVerifyButton.text = if (wavMode) "Filter Wav" else "Record and Filter"
         }
+        val canRunAgain = !wavMode && lastVoiceFilterMicAudio != null && !voiceFilterSample.isRecording
+        speakerReverifyButton.visibility = if (canRunAgain) View.VISIBLE else View.GONE
+        speakerReverifyButton.isEnabled = canRunAgain && !isDownloadingModel.get()
+        updateVoiceFilterPlaybackButtons()
     }
 
     private fun ensureVoiceFilterReady(onReady: () -> Unit) {
@@ -2609,7 +2789,7 @@ class MainActivity : AppCompatActivity() {
         }
         val operationId = beginModelOperation() ?: return
         val envId = selectedEnvId
-        speakerStatusTextView.text = "Status: Preparing VoiceFilter models..."
+        speakerStatusTextView.text = "Status: Preparing VoiceFilter and Silero VAD v6..."
         processingTimeTextView.text = "Processing Time: -- ms"
         speechExecutor.execute {
             try {
@@ -2658,17 +2838,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun filterSelectedVoiceFilterWav() {
         val audio = try {
-            val stream = selectedVoiceFilterWavUri?.let { contentResolver.openInputStream(it) }
-                ?: resources.openRawResource(R.raw.voicefilter_mixed)
-            AudioUtil().loadRawAudio(stream)
+            AudioUtil().loadRawAudio(resources.openRawResource(R.raw.voicefilter_mixed))
         } catch (e: Exception) {
             speakerStatusTextView.text = "Status: WAV error - ${e.message}"
             return
         }
-        performVoiceFiltering(audio.audioData, audio.channels, audio.sampleRate)
+        performVoiceFiltering(audio.audioData, audio.channels, audio.sampleRate, applyVad = false)
     }
 
-    private fun performVoiceFiltering(audio: FloatArray, channels: Int, sampleRate: Int) {
+    private fun performVoiceFiltering(
+        audio: FloatArray,
+        channels: Int,
+        sampleRate: Int,
+        applyVad: Boolean,
+    ) {
         val reference = voiceFilterReferences.getOrNull(speakerProfileSpinner.selectedItemPosition)
         if (reference == null) {
             speakerStatusTextView.text = "Status: Select a target speaker"
@@ -2676,11 +2859,21 @@ class MainActivity : AppCompatActivity() {
         }
         val operationId = beginModelOperation() ?: return
         clearVoiceFilterResult()
-        speakerStatusTextView.text = "Status: Extracting target voice..."
+        speakerStatusTextView.text = if (applyVad) {
+            "Status: Separating speech and filtering for ${reference.name}..."
+        } else {
+            "Status: Filtering for ${reference.name}..."
+        }
         speechExecutor.execute {
             try {
                 val referenceEmbedding = reference.embedding ?: loadPresetVoiceFilterEmbedding(reference)
-                val result = voiceFilterSample.filter(referenceEmbedding, audio, channels, sampleRate)
+                val result = voiceFilterSample.filter(
+                    referenceEmbedding,
+                    audio,
+                    channels,
+                    sampleRate,
+                    applyVad,
+                )
                 runOnUiThreadIfActive {
                     if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                     latestVoiceFilterResult = result
@@ -2752,14 +2945,14 @@ class MainActivity : AppCompatActivity() {
             override fun onCompleted(audio: FloatArray, sampleRate: Int) {
                 when (purpose) {
                     VoiceFilterRecordingPurpose.FILTER -> runOnUiThreadIfActive {
+                        lastVoiceFilterMicAudio = audio.copyOf()
+                        lastVoiceFilterMicSampleRate = sampleRate
+                        speakerWaveformView.showAudio(audio)
                         resetVoiceFilterRecordingUi()
-                        performVoiceFiltering(audio, 1, sampleRate)
+                        performVoiceFiltering(audio, 1, sampleRate, applyVad = true)
                     }
                     VoiceFilterRecordingPurpose.ENROLL -> runOnUiThreadIfActive {
-                        val requestedName = speakerNameEditText.text.toString().trim()
-                        val name = requestedName.ifEmpty {
-                            "My Voice ${voiceFilterProfileStore.list().size + 1}"
-                        }
+                        val name = "My Voice ${voiceFilterProfileStore.list().size + 1}"
                         resetVoiceFilterRecordingUi()
                         performVoiceFilterEnrollment(name, audio, sampleRate)
                     }
@@ -2775,6 +2968,7 @@ class MainActivity : AppCompatActivity() {
         })
         if (started) {
             setModelOperationControlsEnabled(false)
+            speakerReverifyButton.visibility = View.GONE
             speakerStatusTextView.text = "Status: Recording (press Stop when finished)"
             if (purpose == VoiceFilterRecordingPurpose.FILTER) {
                 speakerVerifyButton.isEnabled = true
@@ -2794,11 +2988,10 @@ class MainActivity : AppCompatActivity() {
         speechExecutor.execute {
             try {
                 val result = voiceFilterSample.createEmbedding(audio, 1, sampleRate)
-                val profile = voiceFilterProfileStore.save(name, result.embedding)
+                val profile = voiceFilterProfileStore.save(name, result.embedding, audio, sampleRate)
                 runOnUiThreadIfActive {
                     if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                     refreshVoiceFilterProfiles(profile.id)
-                    speakerNameEditText.setText("")
                     speakerStatusTextView.text = "Status: Registered ${profile.name}"
                     speakerResultTextView.text = String.format(
                         Locale.ROOT,
@@ -2826,21 +3019,145 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun clearVoiceFilterResult() {
+        stopVoiceFilterPlayback(status = null, restoreWaveforms = false)
         latestVoiceFilterResult = null
-        voiceFilterSample.stopPlayback()
         speakerWaveformView.clear()
         voiceFilterOutputWaveformView.clear()
-        voiceFilterPlayInputButton.isEnabled = false
-        voiceFilterPlayOutputButton.isEnabled = false
+        updateVoiceFilterPlaybackButtons()
         if (currentAlgorithm == AlgorithmType.VOICE_FILTER) {
             speakerResultTextView.text = "Filter result: --"
         }
     }
 
+    private fun startVoiceFilterPlayback(playback: VoiceFilterPlayback) {
+        stopVoiceFilterPlayback(status = null, restoreWaveforms = false)
+        val audio = try {
+            when (playback) {
+                VoiceFilterPlayback.REFERENCE -> loadReferenceAudio(
+                    checkNotNull(
+                        voiceFilterReferences.getOrNull(speakerProfileSpinner.selectedItemPosition)
+                    ) { "Select a reference speaker" },
+                    voiceFilterProfileStore,
+                )
+                VoiceFilterPlayback.BEFORE -> {
+                    val result = checkNotNull(latestVoiceFilterResult) { "Run VoiceFilter first" }
+                    speakerWaveformView.startPlayback(result.inputAudio, 1, result.sampleRate)
+                    voiceFilterOutputWaveformView.showAudio(result.outputAudio)
+                    AudioUtil.WavFileData(result.sampleRate, 1, result.inputAudio)
+                }
+                VoiceFilterPlayback.AFTER -> {
+                    val result = checkNotNull(latestVoiceFilterResult) { "Run VoiceFilter first" }
+                    speakerWaveformView.showAudio(result.inputAudio)
+                    voiceFilterOutputWaveformView.startPlayback(result.outputAudio, 1, result.sampleRate)
+                    AudioUtil.WavFileData(result.sampleRate, 1, result.outputAudio)
+                }
+            }
+        } catch (e: Exception) {
+            speakerStatusTextView.text = "Status: ${e.message}"
+            updateVoiceFilterPlaybackButtons()
+            return
+        }
+        voiceFilterPlayback = playback
+        updateVoiceFilterPlaybackButtons()
+        speakerStatusTextView.text = when (playback) {
+            VoiceFilterPlayback.REFERENCE -> "Status: Playing reference speaker"
+            VoiceFilterPlayback.BEFORE -> "Status: Playing before filtering"
+            VoiceFilterPlayback.AFTER -> "Status: Playing after filtering"
+        }
+        try {
+            voiceFilterSample.playAudio(audio.audioData, audio.sampleRate) {
+                runOnUiThreadIfActive {
+                    if (voiceFilterPlayback == playback) {
+                        stopVoiceFilterPlayback("Status: Playback complete")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            stopVoiceFilterPlayback("Status: Playback error - ${e.message}")
+        }
+    }
+
+    private fun stopVoiceFilterPlayback(
+        status: String?,
+        restoreWaveforms: Boolean = true,
+    ) {
+        voiceFilterSample.stopPlayback()
+        speakerWaveformView.stopPlayback()
+        voiceFilterOutputWaveformView.stopPlayback()
+        voiceFilterPlayback = null
+        if (restoreWaveforms) {
+            latestVoiceFilterResult?.let { result ->
+                speakerWaveformView.showAudio(result.inputAudio)
+                voiceFilterOutputWaveformView.showAudio(result.outputAudio)
+            }
+        }
+        updateVoiceFilterPlaybackButtons()
+        if (status != null && currentAlgorithm == AlgorithmType.VOICE_FILTER) {
+            speakerStatusTextView.text = status
+        }
+    }
+
+    private fun updateVoiceFilterPlaybackButtons(controlsEnabled: Boolean = !isDownloadingModel.get()) {
+        val hasResult = latestVoiceFilterResult != null
+        val hasReference =
+            voiceFilterReferences.getOrNull(speakerProfileSpinner.selectedItemPosition) != null
+        when (voiceFilterPlayback) {
+            VoiceFilterPlayback.REFERENCE -> {
+                speakerReferencePlayButton.text = "Stop"
+                speakerReferencePlayButton.isEnabled = true
+                voiceFilterPlayInputButton.text = "Play Before"
+                voiceFilterPlayInputButton.isEnabled = false
+                voiceFilterPlayOutputButton.text = "Play After"
+                voiceFilterPlayOutputButton.isEnabled = false
+            }
+            VoiceFilterPlayback.BEFORE -> {
+                speakerReferencePlayButton.text = "Play"
+                speakerReferencePlayButton.isEnabled = false
+                voiceFilterPlayInputButton.text = "Stop"
+                voiceFilterPlayInputButton.isEnabled = true
+                voiceFilterPlayOutputButton.text = "Play After"
+                voiceFilterPlayOutputButton.isEnabled = false
+            }
+            VoiceFilterPlayback.AFTER -> {
+                speakerReferencePlayButton.text = "Play"
+                speakerReferencePlayButton.isEnabled = false
+                voiceFilterPlayInputButton.text = "Play Before"
+                voiceFilterPlayInputButton.isEnabled = false
+                voiceFilterPlayOutputButton.text = "Stop"
+                voiceFilterPlayOutputButton.isEnabled = true
+            }
+            null -> {
+                speakerReferencePlayButton.text = "Play"
+                speakerReferencePlayButton.isEnabled = controlsEnabled && hasReference
+                voiceFilterPlayInputButton.text = "Play Before"
+                voiceFilterPlayOutputButton.text = "Play After"
+                voiceFilterPlayInputButton.isEnabled = controlsEnabled && hasResult
+                voiceFilterPlayOutputButton.isEnabled = controlsEnabled && hasResult
+            }
+        }
+    }
+
+    private fun loadReferenceAudio(
+        reference: SpeakerReference,
+        profileStore: SpeakerProfileStore,
+    ): AudioUtil.WavFileData {
+        reference.presetRawResource?.let { resource ->
+            return AudioUtil().loadRawAudio(resources.openRawResource(resource))
+        }
+        val profileId = reference.profileId ?: error("Reference audio is unavailable")
+        val savedAudio = profileStore.loadAudio(profileId)
+            ?: error("Add this speaker again to enable playback")
+        return AudioUtil.WavFileData(
+            sampleRate = savedAudio.sampleRate,
+            channels = 1,
+            audioData = savedAudio.audioData,
+        )
+    }
+
     private fun resetVoiceFilterRecordingUi() {
         voiceFilterRecordingPurpose = null
         if (!isDownloadingModel.get()) setModelOperationControlsEnabled(true)
-        speakerRegisterButton.text = "Record and Register"
+        speakerRegisterButton.text = "Add Speaker"
         updateVoiceFilterInputVisibility()
     }
 
@@ -3427,6 +3744,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         activityDestroyed.set(true)
+        lastSpeakerMicAudio = null
+        lastVoiceFilterMicAudio = null
         operationGeneration.incrementAndGet()
         isDownloadingModel.set(false)
         llmSample.cancelGeneration()

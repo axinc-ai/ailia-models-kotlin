@@ -1,8 +1,11 @@
 package jp.axinc.ailia_kotlin
 
 import android.annotation.SuppressLint
+import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
@@ -12,6 +15,7 @@ import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 
 data class SpeakerEmbeddingResult(
     val embedding: FloatArray,
@@ -72,6 +76,7 @@ class AiliaWeSpeakerSample(private val modelDirectory: File) {
     private val cancelRecording = AtomicBoolean(false)
     private var audioRecord: AudioRecord? = null
     private var recordingExecutor: ExecutorService? = null
+    private var audioTrack: AudioTrack? = null
 
     val isRecording: Boolean
         get() = recording.get()
@@ -316,8 +321,91 @@ class AiliaWeSpeakerSample(private val modelDirectory: File) {
         stopRecording()
     }
 
+    fun playAudio(
+        audio: FloatArray,
+        sampleRate: Int = SpeakerVerificationAudio.SAMPLE_RATE,
+        onComplete: (() -> Unit)? = null,
+    ) {
+        require(audio.isNotEmpty()) { "Audio is empty" }
+        stopPlayback()
+        try {
+            val pcm16 = ShortArray(audio.size) { index ->
+                (audio[index].coerceIn(-1f, 1f) * Short.MAX_VALUE).roundToInt().toShort()
+            }
+            val minimumBuffer = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+            )
+            val bufferBytes = maxOf(minimumBuffer, pcm16.size * Short.SIZE_BYTES)
+            val track = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(bufferBytes)
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+            } else {
+                @Suppress("DEPRECATION")
+                AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferBytes,
+                    AudioTrack.MODE_STATIC,
+                )
+            }
+            audioTrack = track
+            val written = track.write(pcm16, 0, pcm16.size)
+            check(written == pcm16.size) { "AudioTrack write failed: $written/${pcm16.size}" }
+            track.setNotificationMarkerPosition(pcm16.size)
+            track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                override fun onMarkerReached(completedTrack: AudioTrack?) {
+                    if (audioTrack === completedTrack) {
+                        stopPlayback()
+                        onComplete?.invoke()
+                    }
+                }
+
+                override fun onPeriodicNotification(completedTrack: AudioTrack?) = Unit
+            })
+            track.play()
+        } catch (e: Exception) {
+            Log.e(TAG, "Audio playback failed", e)
+            stopPlayback()
+            throw e
+        }
+    }
+
+    @Synchronized
+    fun stopPlayback() {
+        val track = audioTrack ?: return
+        audioTrack = null
+        try {
+            if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            track.release()
+        } catch (_: Exception) {
+        }
+    }
+
     fun release() {
         cancelRecording()
+        stopPlayback()
         releaseModels()
     }
 

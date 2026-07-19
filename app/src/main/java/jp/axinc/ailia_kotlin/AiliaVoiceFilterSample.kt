@@ -34,8 +34,8 @@ data class VoiceFilterResult(
  * Standalone port of ailia-models/audio_processing/voicefilter.
  *
  * The class downloads and owns the VoiceFilter mask model and its d-vector
- * embedder. It also exposes a small microphone recorder and PCM player so the
- * sample can be copied independently of MainActivity.
+ * embedder together with Silero VAD v6. It also exposes a small microphone
+ * recorder and PCM player so the sample can be copied independently of MainActivity.
  */
 class AiliaVoiceFilterSample(private val modelDirectory: File) {
     interface RecordingListener {
@@ -55,6 +55,15 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
         private const val EMBEDDER_MODEL_FILE = "voicefilter_embedder.onnx"
         private const val EMBEDDER_PROTO_URL = "${REMOTE_PATH}embedder.onnx.prototxt"
         private const val EMBEDDER_PROTO_FILE = "voicefilter_embedder.onnx.prototxt"
+        private const val VAD_MODEL_URL =
+            "https://storage.googleapis.com/ailia-models/silero-vad/silero_vad_v6.onnx"
+        private const val VAD_MODEL_FILE = "silero_vad_v6.onnx"
+        private const val VAD_PROTO_URL =
+            "https://storage.googleapis.com/ailia-models/silero-vad/silero_vad_v6.onnx.prototxt"
+        private const val VAD_PROTO_FILE = "silero_vad_v6.onnx.prototxt"
+        private const val VAD_WINDOW_SIZE = 512
+        private const val VAD_CONTEXT_SIZE = 64
+        private const val VAD_STATE_SIZE = 2 * 1 * 128
         private const val EMBEDDING_SIZE = 256
         private const val MAX_RECORDING_SECONDS = 30
 
@@ -65,6 +74,7 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
 
     private var filterModel: AiliaModel? = null
     private var embedderModel: AiliaModel? = null
+    private var vadModel: AiliaModel? = null
     @Volatile private var initialized = false
 
     private val recording = AtomicBoolean(false)
@@ -83,6 +93,8 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
                 ModelFileSpec(FILTER_MODEL_URL, FILTER_MODEL_FILE),
                 ModelFileSpec(EMBEDDER_PROTO_URL, EMBEDDER_PROTO_FILE),
                 ModelFileSpec(EMBEDDER_MODEL_URL, EMBEDDER_MODEL_FILE),
+                ModelFileSpec(VAD_PROTO_URL, VAD_PROTO_FILE),
+                ModelFileSpec(VAD_MODEL_URL, VAD_MODEL_FILE),
             ).forEach { spec ->
                 check(ModelDownloader.downloadFile(modelDirectory, spec, listener) != null)
             }
@@ -110,6 +122,12 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
                 File(modelDirectory, EMBEDDER_PROTO_FILE).absolutePath,
                 File(modelDirectory, EMBEDDER_MODEL_FILE).absolutePath,
             )
+            vadModel = AiliaModel(
+                envId,
+                Ailia.MULTITHREAD_AUTO,
+                File(modelDirectory, VAD_PROTO_FILE).absolutePath,
+                File(modelDirectory, VAD_MODEL_FILE).absolutePath,
+            )
             initialized = true
             true
         } catch (e: Exception) {
@@ -127,10 +145,12 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
         check(initialized) { "VoiceFilter is not initialized" }
         val startedAt = System.nanoTime()
         val mono = VoiceFilterAudio.toMono16k(interleavedAudio, channels, sampleRate)
-        require(mono.size >= VoiceFilterAudio.SAMPLE_RATE) {
+        require(mono.isNotEmpty()) { "Reference audio is empty" }
+        val speech = separateSpeech(mono)
+        require(speech.size >= VoiceFilterAudio.SAMPLE_RATE) {
             "At least 1 second of reference speech is required"
         }
-        val mel = VoiceFilterAudio.melSpectrogram(mono)
+        val mel = VoiceFilterAudio.melSpectrogram(speech)
         val frameCount = mel.size / VoiceFilterAudio.MEL_BINS
         val model = checkNotNull(embedderModel)
         val inputIndex = Ailia.FindBlobIndexByName(model.handle, "dvec_mel")
@@ -145,7 +165,7 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
         )
         return VoiceFilterEmbeddingResult(
             embedding = embedding,
-            referenceDurationMs = mono.size * 1_000L / VoiceFilterAudio.SAMPLE_RATE,
+            referenceDurationMs = speech.size * 1_000L / VoiceFilterAudio.SAMPLE_RATE,
             processingTimeMs = (System.nanoTime() - startedAt) / 1_000_000,
         )
     }
@@ -155,15 +175,18 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
         interleavedAudio: FloatArray,
         channels: Int,
         sampleRate: Int,
+        applyVad: Boolean = false,
     ): VoiceFilterResult {
         check(initialized) { "VoiceFilter is not initialized" }
         require(referenceEmbedding.size == EMBEDDING_SIZE) { "Invalid VoiceFilter speaker embedding" }
         val startedAt = System.nanoTime()
         val mono = VoiceFilterAudio.toMono16k(interleavedAudio, channels, sampleRate)
-        require(mono.size >= VoiceFilterAudio.SAMPLE_RATE / 2) {
+        require(mono.isNotEmpty()) { "Input audio is empty" }
+        val filterInput = if (applyVad) separateSpeech(mono) else mono
+        require(filterInput.size >= VoiceFilterAudio.SAMPLE_RATE / 2) {
             "At least 0.5 seconds of input audio is required"
         }
-        val spectrum = VoiceFilterAudio.analysisSpectrum(mono)
+        val spectrum = VoiceFilterAudio.analysisSpectrum(filterInput)
         val model = checkNotNull(filterModel)
         val magnitudeIndex = Ailia.FindBlobIndexByName(model.handle, "mag")
         val embeddingIndex = Ailia.FindBlobIndexByName(model.handle, "dvec")
@@ -191,11 +214,54 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
         )
         val output = VoiceFilterAudio.reconstruct(spectrum, mask)
         return VoiceFilterResult(
-            inputAudio = mono.copyOf(output.size),
+            inputAudio = filterInput.copyOf(output.size),
             outputAudio = output,
             sampleRate = VoiceFilterAudio.SAMPLE_RATE,
             processingTimeMs = (System.nanoTime() - startedAt) / 1_000_000,
         )
+    }
+
+    /** Removes non-speech regions with the same Silero VAD v6 settings as WeSpeaker. */
+    private fun separateSpeech(audio: FloatArray): FloatArray {
+        val model = checkNotNull(vadModel)
+        val inputIndex = Ailia.FindBlobIndexByName(model.handle, "input")
+        val stateIndex = Ailia.FindBlobIndexByName(model.handle, "state")
+        val sampleRateIndex = Ailia.FindBlobIndexByName(model.handle, "sr")
+        val probabilityIndex = Ailia.FindBlobIndexByName(model.handle, "output")
+        val nextStateIndex = Ailia.FindBlobIndexByName(model.handle, "stateN")
+        var state = FloatArray(VAD_STATE_SIZE)
+        var context = FloatArray(VAD_CONTEXT_SIZE)
+        val probabilities = FloatArray((audio.size + VAD_WINDOW_SIZE - 1) / VAD_WINDOW_SIZE)
+
+        model.setInputBlobShapeND(intArrayOf(1, VAD_CONTEXT_SIZE + VAD_WINDOW_SIZE), inputIndex)
+        model.setInputBlobShapeND(intArrayOf(2, 1, 128), stateIndex)
+        // Silero v6 requires a scalar int64 sample-rate input. Reuse the typed
+        // constant embedded in the graph because Java's setter accepts float arrays.
+        val sampleRateConstantIndex = Ailia.FindBlobIndexByName(model.handle, "Constant_0_output")
+        model.copyBlob(sampleRateIndex, sampleRateConstantIndex, model)
+
+        probabilities.indices.forEach { windowIndex ->
+            val chunk = FloatArray(VAD_CONTEXT_SIZE + VAD_WINDOW_SIZE)
+            System.arraycopy(context, 0, chunk, 0, VAD_CONTEXT_SIZE)
+            val audioOffset = windowIndex * VAD_WINDOW_SIZE
+            val available = minOf(VAD_WINDOW_SIZE, audio.size - audioOffset)
+            System.arraycopy(audio, audioOffset, chunk, VAD_CONTEXT_SIZE, available)
+            model.setInputBlobData(chunk, chunk.size * Float.SIZE_BYTES, inputIndex)
+            model.setInputBlobData(state, state.size * Float.SIZE_BYTES, stateIndex)
+            model.update()
+
+            val probability = FloatArray(1)
+            model.getBlobData(probability, Float.SIZE_BYTES, probabilityIndex)
+            probabilities[windowIndex] = probability[0]
+            val nextState = FloatArray(VAD_STATE_SIZE)
+            model.getBlobData(nextState, nextState.size * Float.SIZE_BYTES, nextStateIndex)
+            state = nextState
+            context = chunk.copyOfRange(chunk.size - VAD_CONTEXT_SIZE, chunk.size)
+        }
+
+        val segments = SpeakerVerificationAudio.speechSegments(probabilities, audio.size)
+        require(segments.isNotEmpty()) { "Silero VAD did not detect speech" }
+        return SpeakerVerificationAudio.concatenateSegments(audio, segments)
     }
 
     @SuppressLint("MissingPermission")
@@ -300,7 +366,11 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
         stopRecording()
     }
 
-    fun playAudio(audio: FloatArray, sampleRate: Int = VoiceFilterAudio.SAMPLE_RATE) {
+    fun playAudio(
+        audio: FloatArray,
+        sampleRate: Int = VoiceFilterAudio.SAMPLE_RATE,
+        onComplete: (() -> Unit)? = null,
+    ) {
         require(audio.isNotEmpty()) { "Audio is empty" }
         stopPlayback()
         try {
@@ -348,7 +418,10 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
             track.setNotificationMarkerPosition(pcm16.size)
             track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
                 override fun onMarkerReached(completedTrack: AudioTrack?) {
-                    if (audioTrack === completedTrack) stopPlayback()
+                    if (audioTrack === completedTrack) {
+                        stopPlayback()
+                        onComplete?.invoke()
+                    }
                 }
 
                 override fun onPeriodicNotification(completedTrack: AudioTrack?) = Unit
@@ -392,8 +465,14 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to release VoiceFilter embedder", e)
         }
+        try {
+            vadModel?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release Silero VAD", e)
+        }
         filterModel = null
         embedderModel = null
+        vadModel = null
         initialized = false
     }
 
