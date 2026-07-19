@@ -89,6 +89,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var speakerWaveformView: WaveformView
     private lateinit var speakerStatusTextView: TextView
     private lateinit var speakerResultTextView: TextView
+    private lateinit var voiceFilterInputWaveformLabel: TextView
+    private lateinit var voiceFilterPlayInputButton: Button
+    private lateinit var voiceFilterOutputWaveformLabel: TextView
+    private lateinit var voiceFilterOutputWaveformView: WaveformView
+    private lateinit var voiceFilterPlayOutputButton: Button
 
     // 画像系/Tokenizeアルゴリズムは、Runボタンが押されるまで
     // モデルのダウンロードと実行を行わない
@@ -114,6 +119,10 @@ class MainActivity : AppCompatActivity() {
     private val detrSample by lazy { AiliaDetrSample(modelDirectory) }
     private val weSpeakerSample by lazy { AiliaWeSpeakerSample(modelDirectory) }
     private val speakerProfileStore by lazy { SpeakerProfileStore(this) }
+    private val voiceFilterSample by lazy { AiliaVoiceFilterSample(modelDirectory) }
+    private val voiceFilterProfileStore by lazy {
+        SpeakerProfileStore(this, "voice_filter_profiles")
+    }
 
     // ObjectDetectionのONNXモデルとしてDETRを使うかどうか(falseならYOLOX)
     private var useDetr = false
@@ -163,12 +172,24 @@ class MainActivity : AppCompatActivity() {
     )
 
     private enum class SpeakerRecordingPurpose { VERIFY, ENROLL }
-    private enum class PendingAudioAction { SPEECH, SPEAKER_VERIFY, SPEAKER_ENROLL }
+    private enum class VoiceFilterRecordingPurpose { FILTER, ENROLL }
+    private enum class PendingAudioAction {
+        SPEECH,
+        SPEAKER_VERIFY,
+        SPEAKER_ENROLL,
+        VOICE_FILTER,
+        VOICE_FILTER_ENROLL,
+    }
 
     private var speakerReferences = emptyList<SpeakerReference>()
     private var presetSpeakerEmbedding: FloatArray? = null
     private var selectedSpeakerWavUri: Uri? = null
     private var speakerRecordingPurpose: SpeakerRecordingPurpose? = null
+    private var voiceFilterReferences = emptyList<SpeakerReference>()
+    private var presetVoiceFilterEmbedding: FloatArray? = null
+    private var selectedVoiceFilterWavUri: Uri? = null
+    private var voiceFilterRecordingPurpose: VoiceFilterRecordingPurpose? = null
+    private var latestVoiceFilterResult: VoiceFilterResult? = null
     private var pendingAudioAction: PendingAudioAction? = null
 
     private val speakerWavPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -182,6 +203,22 @@ class MainActivity : AppCompatActivity() {
             if (::speakerSelectWavButton.isInitialized) {
                 speakerSelectWavButton.text = "Selected: ${uri.lastPathSegment ?: "Wav file"}"
                 speakerStatusTextView.text = "Status: Press Verify"
+            }
+        }
+    }
+
+    private val voiceFilterWavPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            selectedVoiceFilterWavUri = uri
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: SecurityException) {
+                // Some document providers grant access only for the current Activity lifetime.
+            }
+            if (::speakerSelectWavButton.isInitialized && currentAlgorithm == AlgorithmType.VOICE_FILTER) {
+                speakerSelectWavButton.text = "Selected: ${uri.lastPathSegment ?: "Wav file"}"
+                speakerStatusTextView.text = "Status: Press Filter"
+                clearVoiceFilterResult()
             }
         }
     }
@@ -211,6 +248,7 @@ class MainActivity : AppCompatActivity() {
         LLM,
         MULTIMODAL_LLM,
         SPEAKER_VERIFICATION,
+        VOICE_FILTER,
     }
 
     companion object {
@@ -311,6 +349,11 @@ class MainActivity : AppCompatActivity() {
         speakerWaveformView = findViewById(R.id.speakerWaveformView)
         speakerStatusTextView = findViewById(R.id.speakerStatusTextView)
         speakerResultTextView = findViewById(R.id.speakerResultTextView)
+        voiceFilterInputWaveformLabel = findViewById(R.id.voiceFilterInputWaveformLabel)
+        voiceFilterPlayInputButton = findViewById(R.id.voiceFilterPlayInputButton)
+        voiceFilterOutputWaveformLabel = findViewById(R.id.voiceFilterOutputWaveformLabel)
+        voiceFilterOutputWaveformView = findViewById(R.id.voiceFilterOutputWaveformView)
+        voiceFilterPlayOutputButton = findViewById(R.id.voiceFilterPlayOutputButton)
     }
 
     private fun setupModeSelection() {
@@ -326,6 +369,7 @@ class MainActivity : AppCompatActivity() {
             "LLM",
             "MultimodalLLM",
             "SpeakerVerification",
+            "VoiceFilter",
         )
 
         // 全体メニュー風の見た目にするため専用のitemレイアウト(白太字・中央寄せ)を使う
@@ -547,6 +591,7 @@ class MainActivity : AppCompatActivity() {
 
             AlgorithmType.SPEECH_TO_TEXT,
             AlgorithmType.SPEAKER_VERIFICATION,
+            AlgorithmType.VOICE_FILTER,
             AlgorithmType.TOKENIZE -> {
                 setupOnnxEnvSpinner(useBlas = true)
             }
@@ -665,6 +710,10 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.SPEAKER_VERIFICATION -> {
                 selectedRuntime = "ONNX"
                 arrayOf("WeSpeaker ResNet34 (VoxCeleb) + Silero VAD v6")
+            }
+            AlgorithmType.VOICE_FILTER -> {
+                selectedRuntime = "ONNX"
+                arrayOf("VoiceFilter + d-vector embedder")
             }
         }
 
@@ -933,8 +982,8 @@ class MainActivity : AppCompatActivity() {
                 0
             }
 
-            AlgorithmType.SPEAKER_VERIFICATION -> {
-                // Speaker verification is handled asynchronously via its WAV/Mic controls.
+            AlgorithmType.SPEAKER_VERIFICATION, AlgorithmType.VOICE_FILTER -> {
+                // Speaker audio tools are handled asynchronously via their WAV/Mic controls.
                 0
             }
         }
@@ -987,6 +1036,11 @@ class MainActivity : AppCompatActivity() {
         speakerWaveformView,
         speakerStatusTextView,
         speakerResultTextView,
+        voiceFilterInputWaveformLabel,
+        voiceFilterPlayInputButton,
+        voiceFilterOutputWaveformLabel,
+        voiceFilterOutputWaveformView,
+        voiceFilterPlayOutputButton,
     )
 
     /** アルゴリズムごとに表示するView集合。共通レイアウトは同じ集合を共有する。 */
@@ -1070,6 +1124,14 @@ class MainActivity : AppCompatActivity() {
             speakerResultTextView,
         )
 
+        val voiceFilterViews = speakerVerificationViews + setOf<View>(
+            voiceFilterInputWaveformLabel,
+            voiceFilterPlayInputButton,
+            voiceFilterOutputWaveformLabel,
+            voiceFilterOutputWaveformView,
+            voiceFilterPlayOutputButton,
+        )
+
         return mapOf(
             AlgorithmType.POSE_ESTIMATION to visionViews,
             AlgorithmType.OBJECT_DETECTION to visionViews,
@@ -1082,6 +1144,7 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.LLM to llmViews,
             AlgorithmType.MULTIMODAL_LLM to multimodalViews,
             AlgorithmType.SPEAKER_VERIFICATION to speakerVerificationViews,
+            AlgorithmType.VOICE_FILTER to voiceFilterViews,
         )
     }
 
@@ -1123,6 +1186,12 @@ class MainActivity : AppCompatActivity() {
                 speakerStatusTextView.text = "Status: Ready"
                 speakerResultTextView.text = "Distance: --"
                 updateSpeakerInputVisibility()
+            }
+
+            AlgorithmType.VOICE_FILTER -> {
+                speakerStatusTextView.text = "Status: Ready"
+                speakerResultTextView.text = "Filter result: --"
+                updateVoiceFilterInputVisibility()
             }
 
             else -> Unit
@@ -1169,6 +1238,10 @@ class MainActivity : AppCompatActivity() {
         hideModelDownloadProgress()
         waveformView.clear()
         voiceWaveformView.clear()
+        speakerWaveformView.clear()
+        voiceFilterOutputWaveformView.clear()
+        voiceFilterSample.stopPlayback()
+        latestVoiceFilterResult = null
         waveformInfoTextView.text = ""
         clearTranscript()
         updateModelSpinner()
@@ -1199,6 +1272,9 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.SPEAKER_VERIFICATION -> {
                 setupSpeakerVerificationControls()
             }
+            AlgorithmType.VOICE_FILTER -> {
+                setupVoiceFilterControls()
+            }
             else -> {}
         }
 
@@ -1221,6 +1297,7 @@ class MainActivity : AppCompatActivity() {
             trackerSample.releaseTracker()
             if (includeSpeech) speechSample.releaseSpeech()
             if (includeSpeech) weSpeakerSample.release()
+            if (includeSpeech) voiceFilterSample.release()
             voiceSample.releaseVoice()
             llmSample.release()
             multimodalLLMSample.release()
@@ -1476,6 +1553,11 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
+                AlgorithmType.VOICE_FILTER -> {
+                    // モデルダウンロードはFilter/Register押下時まで遅延する
+                    return
+                }
+
                 AlgorithmType.TEXT_TO_SPEECH -> {
                     // モデルダウンロードはGenerate押下時(setupVoiceGenerateButton)まで遅延する
                     return
@@ -1590,6 +1672,8 @@ class MainActivity : AppCompatActivity() {
         speakerVerifyButton.isEnabled = enabled
         speakerNameEditText.isEnabled = enabled
         speakerRegisterButton.isEnabled = enabled
+        voiceFilterPlayInputButton.isEnabled = enabled && latestVoiceFilterResult != null
+        voiceFilterPlayOutputButton.isEnabled = enabled && latestVoiceFilterResult != null
     }
 
     private fun runOnUiThreadIfActive(action: () -> Unit) {
@@ -2093,6 +2177,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupSpeakerVerificationControls() {
+        speakerProfileLabel.text = "Reference speaker:"
+        speakerEnrollmentLabel.text = "Enroll your voice:"
+        speakerSelectWavButton.text = selectedSpeakerWavUri?.let {
+            "Selected: ${it.lastPathSegment ?: "Wav file"}"
+        } ?: "Select Wav (default sample)"
+        speakerResultTextView.text = "Distance: --"
+        speakerProfileSpinner.onItemSelectedListener = null
         refreshSpeakerProfiles()
         speakerInputModeRadioGroup.setOnCheckedChangeListener { _, _ ->
             if (weSpeakerSample.isRecording) {
@@ -2397,6 +2488,362 @@ class MainActivity : AppCompatActivity() {
         updateSpeakerInputVisibility()
     }
 
+    private fun setupVoiceFilterControls() {
+        speakerProfileLabel.text = "Target speaker:"
+        speakerEnrollmentLabel.text = "Enroll your voice for VoiceFilter:"
+        speakerSelectWavButton.text = selectedVoiceFilterWavUri?.let {
+            "Selected: ${it.lastPathSegment ?: "Wav file"}"
+        } ?: "Select Wav (default mixed sample)"
+        refreshVoiceFilterProfiles()
+        clearVoiceFilterResult()
+
+        speakerProfileSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                clearVoiceFilterResult()
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        speakerInputModeRadioGroup.setOnCheckedChangeListener { _, _ ->
+            if (voiceFilterSample.isRecording) {
+                voiceFilterSample.cancelRecording()
+                resetVoiceFilterRecordingUi()
+            }
+            clearVoiceFilterResult()
+            updateVoiceFilterInputVisibility()
+        }
+        speakerSelectWavButton.setOnClickListener {
+            voiceFilterWavPicker.launch(arrayOf("audio/wav", "audio/x-wav", "audio/*"))
+        }
+        speakerVerifyButton.setOnClickListener {
+            if (voiceFilterSample.isRecording) {
+                if (voiceFilterRecordingPurpose == VoiceFilterRecordingPurpose.FILTER) {
+                    speakerStatusTextView.text = "Status: Filtering recorded audio..."
+                    speakerVerifyButton.isEnabled = false
+                    voiceFilterSample.stopRecording()
+                }
+                return@setOnClickListener
+            }
+            if (isDownloadingModel.get()) return@setOnClickListener
+            if (speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerMicRadioButton) {
+                ensureVoiceFilterReady { startVoiceFilterRecording(VoiceFilterRecordingPurpose.FILTER) }
+            } else {
+                ensureVoiceFilterReady { filterSelectedVoiceFilterWav() }
+            }
+        }
+        speakerRegisterButton.setOnClickListener {
+            if (voiceFilterSample.isRecording) {
+                if (voiceFilterRecordingPurpose == VoiceFilterRecordingPurpose.ENROLL) {
+                    speakerStatusTextView.text = "Status: Creating speaker profile..."
+                    speakerRegisterButton.isEnabled = false
+                    voiceFilterSample.stopRecording()
+                }
+                return@setOnClickListener
+            }
+            if (isDownloadingModel.get()) return@setOnClickListener
+            ensureVoiceFilterReady { startVoiceFilterRecording(VoiceFilterRecordingPurpose.ENROLL) }
+        }
+        voiceFilterPlayInputButton.setOnClickListener {
+            val result = latestVoiceFilterResult ?: return@setOnClickListener
+            try {
+                speakerWaveformView.startPlayback(result.inputAudio, 1, result.sampleRate)
+                voiceFilterOutputWaveformView.showAudio(result.outputAudio)
+                voiceFilterSample.playAudio(result.inputAudio, result.sampleRate)
+                speakerStatusTextView.text = "Status: Playing before filtering"
+            } catch (e: Exception) {
+                speakerStatusTextView.text = "Status: Playback error - ${e.message}"
+            }
+        }
+        voiceFilterPlayOutputButton.setOnClickListener {
+            val result = latestVoiceFilterResult ?: return@setOnClickListener
+            try {
+                speakerWaveformView.showAudio(result.inputAudio)
+                voiceFilterOutputWaveformView.startPlayback(result.outputAudio, 1, result.sampleRate)
+                voiceFilterSample.playAudio(result.outputAudio, result.sampleRate)
+                speakerStatusTextView.text = "Status: Playing after filtering"
+            } catch (e: Exception) {
+                speakerStatusTextView.text = "Status: Playback error - ${e.message}"
+            }
+        }
+        updateVoiceFilterInputVisibility()
+    }
+
+    private fun refreshVoiceFilterProfiles(selectProfileId: String? = null) {
+        val customProfiles = voiceFilterProfileStore.list()
+        voiceFilterReferences = listOf(
+            SpeakerReference(
+                name = "ailia-models ref-voice (preset)",
+                embedding = presetVoiceFilterEmbedding,
+                presetRawResource = R.raw.voicefilter_ref_voice,
+            )
+        ) + customProfiles.map { profile ->
+            SpeakerReference(profile.name, profile.embedding)
+        }
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            voiceFilterReferences.map { it.name }.toTypedArray(),
+        )
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        speakerProfileSpinner.adapter = adapter
+        if (selectProfileId != null) {
+            val selectedProfile = customProfiles.indexOfFirst { it.id == selectProfileId }
+            if (selectedProfile >= 0) speakerProfileSpinner.setSelection(selectedProfile + 1)
+        }
+    }
+
+    private fun updateVoiceFilterInputVisibility() {
+        if (currentAlgorithm != AlgorithmType.VOICE_FILTER) return
+        val wavMode = speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton
+        speakerSelectWavButton.visibility = if (wavMode) View.VISIBLE else View.GONE
+        if (!voiceFilterSample.isRecording) {
+            speakerVerifyButton.text = if (wavMode) "Filter Wav" else "Record and Filter"
+        }
+    }
+
+    private fun ensureVoiceFilterReady(onReady: () -> Unit) {
+        if (isInitialized) {
+            onReady()
+            return
+        }
+        val operationId = beginModelOperation() ?: return
+        val envId = selectedEnvId
+        speakerStatusTextView.text = "Status: Preparing VoiceFilter models..."
+        processingTimeTextView.text = "Processing Time: -- ms"
+        speechExecutor.execute {
+            try {
+                val downloaded = voiceFilterSample.downloadModel(object : ModelDownloadListener {
+                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                        runOnUiThreadIfActive {
+                            if (isCurrentOperation(operationId)) {
+                                speakerStatusTextView.text = "Status: Downloading $fileName"
+                                showModelDownloadProgress(bytesDownloaded, totalBytes)
+                            }
+                        }
+                    }
+
+                    override fun onComplete() = Unit
+
+                    override fun onError(error: String) {
+                        runOnUiThreadIfActive {
+                            if (isCurrentOperation(operationId)) speakerStatusTextView.text = "Status: $error"
+                        }
+                    }
+                })
+                val success = downloaded && voiceFilterSample.initialize(envId)
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    isInitialized = success
+                    hideModelDownloadProgress()
+                    finishModelOperation(operationId)
+                    if (success) {
+                        speakerStatusTextView.text = "Status: Ready"
+                        onReady()
+                    } else {
+                        speakerStatusTextView.text = "Status: Initialization failed"
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("AILIA_Main", "VoiceFilter download/init failed", e)
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    hideModelDownloadProgress()
+                    finishModelOperation(operationId)
+                    speakerStatusTextView.text = "Status: Error - ${e.message}"
+                }
+            }
+        }
+    }
+
+    private fun filterSelectedVoiceFilterWav() {
+        val audio = try {
+            val stream = selectedVoiceFilterWavUri?.let { contentResolver.openInputStream(it) }
+                ?: resources.openRawResource(R.raw.voicefilter_mixed)
+            AudioUtil().loadRawAudio(stream)
+        } catch (e: Exception) {
+            speakerStatusTextView.text = "Status: WAV error - ${e.message}"
+            return
+        }
+        performVoiceFiltering(audio.audioData, audio.channels, audio.sampleRate)
+    }
+
+    private fun performVoiceFiltering(audio: FloatArray, channels: Int, sampleRate: Int) {
+        val reference = voiceFilterReferences.getOrNull(speakerProfileSpinner.selectedItemPosition)
+        if (reference == null) {
+            speakerStatusTextView.text = "Status: Select a target speaker"
+            return
+        }
+        val operationId = beginModelOperation() ?: return
+        clearVoiceFilterResult()
+        speakerStatusTextView.text = "Status: Extracting target voice..."
+        speechExecutor.execute {
+            try {
+                val referenceEmbedding = reference.embedding ?: loadPresetVoiceFilterEmbedding(reference)
+                val result = voiceFilterSample.filter(referenceEmbedding, audio, channels, sampleRate)
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    latestVoiceFilterResult = result
+                    speakerWaveformView.showAudio(result.inputAudio)
+                    voiceFilterOutputWaveformView.showAudio(result.outputAudio)
+                    voiceFilterPlayInputButton.isEnabled = true
+                    voiceFilterPlayOutputButton.isEnabled = true
+                    speakerResultTextView.text = String.format(
+                        Locale.ROOT,
+                        "Target: %s\nDuration: %.2f s\nBefore/after audio is ready for playback",
+                        reference.name,
+                        result.outputAudio.size.toFloat() / result.sampleRate,
+                    )
+                    processingTimeTextView.text = "Processing Time: ${result.processingTimeMs} ms"
+                    speakerStatusTextView.text = "Status: Complete"
+                }
+            } catch (e: Exception) {
+                Log.e("AILIA_Main", "Voice filtering failed", e)
+                runOnUiThreadIfActive {
+                    if (isCurrentOperation(operationId)) {
+                        speakerStatusTextView.text = "Status: Error - ${e.message}"
+                    }
+                }
+            } finally {
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    finishModelOperation(operationId)
+                    updateVoiceFilterInputVisibility()
+                }
+            }
+        }
+    }
+
+    private fun loadPresetVoiceFilterEmbedding(reference: SpeakerReference): FloatArray {
+        presetVoiceFilterEmbedding?.let { return it }
+        val resource = reference.presetRawResource ?: error("Target speaker embedding is missing")
+        val wav = AudioUtil().loadRawAudio(resources.openRawResource(resource))
+        val embedding = voiceFilterSample.createEmbedding(
+            wav.audioData,
+            wav.channels,
+            wav.sampleRate,
+        ).embedding
+        presetVoiceFilterEmbedding = embedding
+        return embedding
+    }
+
+    private fun startVoiceFilterRecording(purpose: VoiceFilterRecordingPurpose) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            pendingAudioAction = when (purpose) {
+                VoiceFilterRecordingPurpose.FILTER -> PendingAudioAction.VOICE_FILTER
+                VoiceFilterRecordingPurpose.ENROLL -> PendingAudioAction.VOICE_FILTER_ENROLL
+            }
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                REQUEST_CODE_AUDIO_PERMISSION,
+            )
+            return
+        }
+        pendingAudioAction = null
+        voiceFilterRecordingPurpose = purpose
+        clearVoiceFilterResult()
+        val started = voiceFilterSample.startRecording(object : AiliaVoiceFilterSample.RecordingListener {
+            override fun onWaveform(samples: FloatArray, sampleRate: Int) {
+                val blocks = WaveformView.peakBlocks(samples, samples.size, sampleRate)
+                runOnUiThreadIfActive { speakerWaveformView.push(blocks) }
+            }
+
+            override fun onCompleted(audio: FloatArray, sampleRate: Int) {
+                when (purpose) {
+                    VoiceFilterRecordingPurpose.FILTER -> runOnUiThreadIfActive {
+                        resetVoiceFilterRecordingUi()
+                        performVoiceFiltering(audio, 1, sampleRate)
+                    }
+                    VoiceFilterRecordingPurpose.ENROLL -> runOnUiThreadIfActive {
+                        val requestedName = speakerNameEditText.text.toString().trim()
+                        val name = requestedName.ifEmpty {
+                            "My Voice ${voiceFilterProfileStore.list().size + 1}"
+                        }
+                        resetVoiceFilterRecordingUi()
+                        performVoiceFilterEnrollment(name, audio, sampleRate)
+                    }
+                }
+            }
+
+            override fun onError(error: String) {
+                runOnUiThreadIfActive {
+                    resetVoiceFilterRecordingUi()
+                    speakerStatusTextView.text = "Status: Recording error - $error"
+                }
+            }
+        })
+        if (started) {
+            setModelOperationControlsEnabled(false)
+            speakerStatusTextView.text = "Status: Recording (press Stop when finished)"
+            if (purpose == VoiceFilterRecordingPurpose.FILTER) {
+                speakerVerifyButton.isEnabled = true
+                speakerVerifyButton.text = "Stop"
+            } else {
+                speakerRegisterButton.isEnabled = true
+                speakerRegisterButton.text = "Stop"
+            }
+        } else {
+            resetVoiceFilterRecordingUi()
+        }
+    }
+
+    private fun performVoiceFilterEnrollment(name: String, audio: FloatArray, sampleRate: Int) {
+        val operationId = beginModelOperation() ?: return
+        speakerStatusTextView.text = "Status: Creating VoiceFilter speaker profile..."
+        speechExecutor.execute {
+            try {
+                val result = voiceFilterSample.createEmbedding(audio, 1, sampleRate)
+                val profile = voiceFilterProfileStore.save(name, result.embedding)
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    refreshVoiceFilterProfiles(profile.id)
+                    speakerNameEditText.setText("")
+                    speakerStatusTextView.text = "Status: Registered ${profile.name}"
+                    speakerResultTextView.text = String.format(
+                        Locale.ROOT,
+                        "Registered: %s\nReference speech: %.2f s",
+                        profile.name,
+                        result.referenceDurationMs / 1_000f,
+                    )
+                    processingTimeTextView.text = "Processing Time: ${result.processingTimeMs} ms"
+                }
+            } catch (e: Exception) {
+                Log.e("AILIA_Main", "VoiceFilter enrollment failed", e)
+                runOnUiThreadIfActive {
+                    if (isCurrentOperation(operationId)) {
+                        speakerStatusTextView.text = "Status: Error - ${e.message}"
+                    }
+                }
+            } finally {
+                runOnUiThreadIfActive {
+                    if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
+                    finishModelOperation(operationId)
+                    updateVoiceFilterInputVisibility()
+                }
+            }
+        }
+    }
+
+    private fun clearVoiceFilterResult() {
+        latestVoiceFilterResult = null
+        voiceFilterSample.stopPlayback()
+        speakerWaveformView.clear()
+        voiceFilterOutputWaveformView.clear()
+        voiceFilterPlayInputButton.isEnabled = false
+        voiceFilterPlayOutputButton.isEnabled = false
+        if (currentAlgorithm == AlgorithmType.VOICE_FILTER) {
+            speakerResultTextView.text = "Filter result: --"
+        }
+    }
+
+    private fun resetVoiceFilterRecordingUi() {
+        voiceFilterRecordingPurpose = null
+        if (!isDownloadingModel.get()) setModelOperationControlsEnabled(true)
+        speakerRegisterButton.text = "Record and Register"
+        updateVoiceFilterInputVisibility()
+    }
+
     /**
      * Speechモデルを必要ならダウンロード+初期化してからonReadyをUIスレッドで呼ぶ。
      * モデルダウンロードはRun/Record押下時に初めて行う。
@@ -2608,7 +3055,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processImageMode() {
-        if (currentAlgorithm == AlgorithmType.SPEAKER_VERIFICATION) {
+        if (currentAlgorithm == AlgorithmType.SPEAKER_VERIFICATION ||
+            currentAlgorithm == AlgorithmType.VOICE_FILTER) {
             return
         }
 
@@ -2823,7 +3271,8 @@ class MainActivity : AppCompatActivity() {
             // Tokenizerは静止テキストに対する1ショット推論のみ。
             // 直前のアルゴリズムがCamera Modeでも解析ループへ流さない。
             if (currentAlgorithm == AlgorithmType.TOKENIZE ||
-                currentAlgorithm == AlgorithmType.SPEAKER_VERIFICATION) {
+                currentAlgorithm == AlgorithmType.SPEAKER_VERIFICATION ||
+                currentAlgorithm == AlgorithmType.VOICE_FILTER) {
                 image.close()
                 return
             }
@@ -2963,6 +3412,10 @@ class MainActivity : AppCompatActivity() {
                             startSpeakerRecording(SpeakerRecordingPurpose.VERIFY)
                         PendingAudioAction.SPEAKER_ENROLL ->
                             startSpeakerRecording(SpeakerRecordingPurpose.ENROLL)
+                        PendingAudioAction.VOICE_FILTER ->
+                            startVoiceFilterRecording(VoiceFilterRecordingPurpose.FILTER)
+                        PendingAudioAction.VOICE_FILTER_ENROLL ->
+                            startVoiceFilterRecording(VoiceFilterRecordingPurpose.ENROLL)
                         PendingAudioAction.SPEECH, null -> startMicRecording()
                     }
                 } else {
@@ -2987,6 +3440,7 @@ class MainActivity : AppCompatActivity() {
         speechExecutor.execute {
             speechSample.releaseSpeech()
             weSpeakerSample.release()
+            voiceFilterSample.release()
         }
         speechExecutor.shutdown()
         cameraExecutor.execute { releaseCurrentAlgorithm(includeSpeech = false) }

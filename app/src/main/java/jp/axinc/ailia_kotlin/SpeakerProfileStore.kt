@@ -13,8 +13,11 @@ data class SpeakerProfile(
 )
 
 /** Persists user-enrolled speaker embeddings; raw microphone audio is never retained. */
-class SpeakerProfileStore(context: Context) {
-    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+class SpeakerProfileStore(
+    context: Context,
+    storageName: String = DEFAULT_STORAGE_NAME,
+) {
+    private val preferences = context.getSharedPreferences(storageName, Context.MODE_PRIVATE)
 
     fun list(): List<SpeakerProfile> = preferences.getStringSet(KEY_IDS, emptySet()).orEmpty()
         .mapNotNull { id ->
@@ -57,7 +60,7 @@ class SpeakerProfileStore(context: Context) {
     private fun embeddingKey(id: String) = "speaker.$id.embedding"
 
     companion object {
-        private const val PREFERENCES_NAME = "speaker_verification_profiles"
+        private const val DEFAULT_STORAGE_NAME = "speaker_verification_profiles"
         private const val KEY_IDS = "speaker_ids"
     }
 }

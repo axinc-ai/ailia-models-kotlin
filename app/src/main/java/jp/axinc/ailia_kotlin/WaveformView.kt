@@ -94,6 +94,30 @@ class WaveformView @JvmOverloads constructor(
         postInvalidateOnAnimation()
     }
 
+    /** Displays the complete clip compressed to the available 300 waveform bars. */
+    fun showAudio(samples: FloatArray, channels: Int = 1) {
+        stopPlayback()
+        blocks.clear()
+        if (samples.isEmpty() || channels <= 0) {
+            postInvalidateOnAnimation()
+            return
+        }
+        val frameCount = samples.size / channels
+        val barCount = min(BLOCK_COUNT, frameCount)
+        for (bar in 0 until barCount) {
+            val startFrame = bar * frameCount / barCount
+            val endFrame = max(startFrame + 1, (bar + 1) * frameCount / barCount)
+            var peak = 0f
+            for (frame in startFrame until endFrame) {
+                for (channel in 0 until channels) {
+                    peak = max(peak, abs(samples[frame * channels + channel]))
+                }
+            }
+            blocks.addLast(peak)
+        }
+        postInvalidateOnAnimation()
+    }
+
     /**
      * 合成音声の波形を再生位置に追従して表示する(Flutter版 playFromWav 相当)。
      * 33ms周期で経過時間ぶんのブロックを流し込む。

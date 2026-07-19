@@ -355,11 +355,58 @@
                 android:text="Record and Register"
                 android:visibility="gone" />
 
+            <TextView
+                android:id="@+id/voiceFilterInputWaveformLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:text="Before filtering:"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
             <jp.axinc.ailia_kotlin.WaveformView
                 android:id="@+id/speakerWaveformView"
                 android:layout_width="match_parent"
                 android:layout_height="100dp"
                 android:layout_marginBottom="8dp"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/voiceFilterPlayInputButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:enabled="false"
+                android:text="Play Before"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/voiceFilterOutputWaveformLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:text="After filtering:"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <jp.axinc.ailia_kotlin.WaveformView
+                android:id="@+id/voiceFilterOutputWaveformView"
+                android:layout_width="match_parent"
+                android:layout_height="100dp"
+                android:layout_marginBottom="8dp"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/voiceFilterPlayOutputButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:enabled="false"
+                android:text="Play After"
                 android:visibility="gone" />
 
             <TextView
