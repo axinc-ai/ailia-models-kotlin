@@ -182,8 +182,8 @@ class AiliaTFLiteClassificationSample(private val modelDirectory: File) {
     /** Compatibility wrapper for the demo UI. Use [classify] for typed output. */
     fun processClassification(bitmap: Bitmap): Long = classify(bitmap)?.processingTimeMs ?: -1
 
-    /** Runs preprocessing, inference and postprocessing and returns typed output. */
-    fun classify(bitmap: Bitmap): ModelInferenceResult<ClassificationResult>? {
+    /** Runs preprocessing, inference and postprocessing and returns the top ranked results. */
+    fun classify(bitmap: Bitmap): ModelInferenceResult<List<ClassificationResult>>? {
         if (!isInitialized || tflite == null || inputShape == null || outputShape == null) {
             Log.e(TAG, "Classification not initialized properly")
             return null
@@ -212,7 +212,7 @@ class AiliaTFLiteClassificationSample(private val modelDirectory: File) {
                 return null
             }
 
-            val result = decodeQuantizedClassification(
+            val results = decodeQuantizedClassifications(
                 outputShape!!,
                 outputData,
                 outputType == AiliaTFLite.AILIA_TFLITE_TENSOR_TYPE_INT8,
@@ -220,9 +220,11 @@ class AiliaTFLiteClassificationSample(private val modelDirectory: File) {
                 quantZeroPoint,
                 ImageNetLabels.CATEGORY,
             )
-            lastClassificationResult = result.displayText()
-            Log.i(TAG, "class ${result.category} ${result.label} confidence ${result.confidence}")
-            ModelInferenceResult(result, (endTime - startTime) / 1_000_000)
+            lastClassificationResult = formatClassificationResults(results)
+            results.forEachIndexed { rank, result ->
+                Log.i(TAG, "rank ${rank + 1} class ${result.category} ${result.label} confidence ${result.confidence}")
+            }
+            ModelInferenceResult(results, (endTime - startTime) / 1_000_000)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to process classification: ${e.javaClass.name}: ${e.message}")
             null
@@ -255,26 +257,32 @@ class AiliaTFLiteClassificationSample(private val modelDirectory: File) {
 }
 
 /** Pure quantized classification postprocessing for host-side unit tests. */
-internal fun decodeQuantizedClassification(
+internal fun decodeQuantizedClassifications(
     outputShape: IntArray,
     outputBuffer: ByteArray,
     signed: Boolean,
     quantScale: Float,
     quantZeroPoint: Long,
     labels: Array<String>,
-): ClassificationResult {
+    maxResults: Int = CLASSIFICATION_TOP_COUNT,
+): List<ClassificationResult> {
     val classCount = outputShape.fold(1) { total, dimension -> total * dimension }
     require(classCount == labels.size) { "Unexpected classification output count: $classCount" }
     require(outputBuffer.size >= classCount) { "Classification output buffer is too small" }
-    var maxConfidence = Float.NEGATIVE_INFINITY
-    var maxCategory = 0
-    for (category in 0 until classCount) {
-        val quantized = if (signed) outputBuffer[category].toInt() else outputBuffer[category].toInt() and 0xFF
-        val confidence = (quantized - quantZeroPoint).toFloat() * quantScale
-        if (confidence > maxConfidence) {
-            maxConfidence = confidence
-            maxCategory = category
+    require(maxResults > 0) { "maxResults must be positive" }
+    return (0 until classCount)
+        .map { category ->
+            val quantized = if (signed) {
+                outputBuffer[category].toInt()
+            } else {
+                outputBuffer[category].toInt() and 0xFF
+            }
+            ClassificationResult(
+                category = category,
+                label = labels[category],
+                confidence = (quantized - quantZeroPoint).toFloat() * quantScale,
+            )
         }
-    }
-    return ClassificationResult(maxCategory, labels[maxCategory], maxConfidence)
+        .sortedWith(compareByDescending<ClassificationResult> { it.confidence }.thenBy { it.category })
+        .take(minOf(maxResults, classCount))
 }
