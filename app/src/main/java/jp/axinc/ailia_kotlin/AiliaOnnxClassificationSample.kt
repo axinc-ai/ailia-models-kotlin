@@ -7,7 +7,8 @@ import java.io.File
 /**
  * ONNXの画像分類モデル定義。
  * range はailia-models(Python版)のClassifier設定に合わせる
- * (MobileNetV2: IMAGENET, resnet50.opt: SIGNED_INT8)。
+ * (MobileNetV2: IMAGENET, resnet50.opt: SIGNED_INT8,
+ * ViT-B/16: SIGNED_FP32[-1, 1])。
  */
 enum class OnnxClassificationModelType(
     val displayName: String,
@@ -32,6 +33,14 @@ enum class OnnxClassificationModelType(
         "https://storage.googleapis.com/ailia-models/resnet50/resnet50.opt.onnx.prototxt",
         "resnet50.opt.onnx.prototxt",
         AiliaNetworkImageRange.SIGNED_INT8
+    ),
+    VIT_B16(
+        "ViT-B/16",
+        "https://storage.googleapis.com/ailia-models/vit/ViT-B_16-224.onnx",
+        "ViT-B_16-224.onnx",
+        "https://storage.googleapis.com/ailia-models/vit/ViT-B_16-224.onnx.prototxt",
+        "ViT-B_16-224.onnx.prototxt",
+        AiliaNetworkImageRange.SIGNED_FP32
     ),
 }
 
