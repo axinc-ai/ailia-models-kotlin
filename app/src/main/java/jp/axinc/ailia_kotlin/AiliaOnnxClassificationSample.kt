@@ -8,14 +8,43 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
+/**
+ * ONNXの画像分類モデル定義。
+ * range はailia-models(Python版)のClassifier設定に合わせる
+ * (MobileNetV2: IMAGENET, resnet50.opt: SIGNED_INT8)。
+ */
+enum class OnnxClassificationModelType(
+    val displayName: String,
+    val weightUrl: String,
+    val weightFile: String,
+    val protoUrl: String,
+    val protoFile: String,
+    val range: AiliaNetworkImageRange
+) {
+    MOBILENETV2(
+        "MobileNetV2",
+        "https://storage.googleapis.com/ailia-models/mobilenetv2/mobilenetv2_1.0.onnx",
+        "mobilenetv2_1.0.onnx",
+        "https://storage.googleapis.com/ailia-models/mobilenetv2/mobilenetv2_1.0.onnx.prototxt",
+        "mobilenetv2_1.0.onnx.prototxt",
+        AiliaNetworkImageRange.IMAGENET
+    ),
+    RESNET50(
+        "ResNet50",
+        "https://storage.googleapis.com/ailia-models/resnet50/resnet50.opt.onnx",
+        "resnet50.opt.onnx",
+        "https://storage.googleapis.com/ailia-models/resnet50/resnet50.opt.onnx.prototxt",
+        "resnet50.opt.onnx.prototxt",
+        AiliaNetworkImageRange.SIGNED_INT8
+    ),
+}
+
 class AiliaOnnxClassificationSample {
     companion object {
         private const val TAG = "AILIA_Main"
-        private const val MODEL_URL = "https://storage.googleapis.com/ailia-models/mobilenetv2/mobilenetv2_1.0.onnx"
-        private const val MODEL_FILE = "mobilenetv2_1.0.onnx"
-        private const val PROTO_URL = "https://storage.googleapis.com/ailia-models/mobilenetv2/mobilenetv2_1.0.onnx.prototxt"
-        private const val PROTO_FILE = "mobilenetv2_1.0.onnx.prototxt"
     }
+
+    var modelType: OnnxClassificationModelType = OnnxClassificationModelType.MOBILENETV2
 
     interface DownloadListener {
         fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
@@ -68,14 +97,14 @@ class AiliaOnnxClassificationSample {
 
     fun downloadModel(listener: DownloadListener? = null): Boolean {
         try {
-            Log.i(TAG, "Starting ONNX classification model download/check...")
-            downloadFile(PROTO_URL, PROTO_FILE, listener)
-            downloadFile(MODEL_URL, MODEL_FILE, listener)
+            Log.i(TAG, "Starting ONNX classification model download/check (${modelType.displayName})...")
+            downloadFile(modelType.protoUrl, modelType.protoFile, listener)
+            downloadFile(modelType.weightUrl, modelType.weightFile, listener)
             listener?.onComplete()
             Log.i(TAG, "ONNX classification model download/check complete")
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "Model Download Failed: $MODEL_FILE", e)
+            Log.e(TAG, "Model Download Failed: ${modelType.weightFile}", e)
             listener?.onError(e.message ?: "Download failed")
             return false
         }
@@ -88,8 +117,8 @@ class AiliaOnnxClassificationSample {
 
         return try {
             val dir = modelDir
-            val protoPath = "$dir/$PROTO_FILE"
-            val modelPath = "$dir/$MODEL_FILE"
+            val protoPath = "$dir/${modelType.protoFile}"
+            val modelPath = "$dir/${modelType.weightFile}"
 
             ailia = AiliaModel(envId, Ailia.MULTITHREAD_AUTO, protoPath, modelPath)
 
@@ -97,11 +126,11 @@ class AiliaOnnxClassificationSample {
                 ailia!!.handle,
                 AiliaNetworkImageFormat.RGB,
                 AiliaNetworkImageChannel.FIRST,
-                AiliaNetworkImageRange.IMAGENET
+                modelType.range
             )
 
             isInitialized = true
-            Log.i(TAG, "ONNX Classification initialized successfully with envId=$envId")
+            Log.i(TAG, "ONNX Classification (${modelType.displayName}) initialized successfully with envId=$envId")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize ONNX classification: ${e.javaClass.name}: ${e.message}")

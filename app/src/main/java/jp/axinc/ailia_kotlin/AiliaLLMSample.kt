@@ -10,6 +10,7 @@ import axip.ailia_llm.AiliaLLMChatMessage
  */
 enum class LLMModelType(val displayName: String, val fileName: String) {
     GEMMA_4_E2B("Gemma 4 E2B", "gemma-4-E2B-it-Q4_K_M.gguf"),
+    GEMMA_4_E4B("Gemma 4 E4B", "gemma-4-E4B-it-Q4_K_M.gguf"),
     GEMMA_2_2B("Gemma 2 2B", "gemma-2-2b-it-Q4_K_M.gguf"),
 }
 

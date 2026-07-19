@@ -11,9 +11,89 @@ import java.io.File
 import kotlin.math.exp
 import kotlin.math.pow
 
+/**
+ * TFLiteの画像分類モデル定義。
+ * modelUrlがnullの場合はraw resource(mobilenetv2)を使用する。
+ * ResNet50はailia-models-tfliteのint8量子化モデル(recalibrated)を使用する。
+ */
+enum class TFLiteClassificationModelType(
+    val displayName: String,
+    val modelUrl: String?,
+    val modelFile: String?,
+) {
+    MOBILENETV2("MobileNetV2", null, null),
+    RESNET50(
+        "ResNet50",
+        "https://storage.googleapis.com/ailia-models-tflite/resnet50/resnet50_quant_recalib.tflite",
+        "resnet50_quant_recalib.tflite"
+    ),
+}
+
 class AiliaTFLiteClassificationSample {
     companion object {
         private const val TAG = "AILIA_Main"
+    }
+
+    interface DownloadListener {
+        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
+        fun onComplete()
+        fun onError(error: String)
+    }
+
+    var modelType: TFLiteClassificationModelType = TFLiteClassificationModelType.MOBILENETV2
+    var modelDir: String = ""
+
+    /** modelUrlを持つモデル(ResNet50)をmodelDirへダウンロードする */
+    fun downloadModel(listener: DownloadListener? = null): Boolean {
+        val url = modelType.modelUrl ?: return true
+        val fileName = modelType.modelFile!!
+        val path = "$modelDir/$fileName"
+        try {
+            val file = File(path)
+            if (file.exists() && file.canRead()) {
+                Log.i(TAG, "Model file already exists: $path (${file.length()} bytes)")
+                listener?.onComplete()
+                return true
+            }
+            file.parentFile?.mkdirs()
+            val tmpFile = File("$path.tmp")
+            val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            connection.connectTimeout = 30000
+            connection.readTimeout = 60000
+            connection.connect()
+            val totalBytes = connection.contentLengthLong
+            connection.inputStream.use { input ->
+                java.io.FileOutputStream(tmpFile).use { output ->
+                    val buffer = ByteArray(8192)
+                    var bytesDownloaded: Long = 0
+                    var bytesRead: Int
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        bytesDownloaded += bytesRead
+                        listener?.onProgress(fileName, bytesDownloaded, totalBytes)
+                    }
+                }
+            }
+            tmpFile.renameTo(file)
+            listener?.onComplete()
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Model Download Failed: $fileName", e)
+            listener?.onError(e.message ?: "Download failed")
+            return false
+        }
+    }
+
+    /** ダウンロード済みモデルファイルから初期化する */
+    fun initializeFromFile(env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
+        val fileName = modelType.modelFile ?: return false
+        return try {
+            val modelData = File("$modelDir/$fileName").readBytes()
+            initializeClassification(modelData, env)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read model file: ${e.message}")
+            false
+        }
     }
 
     private fun loadImage(inputTensorType: Int, inputBuffer: ByteArray, inputShape: IntArray, bitmap : Bitmap, quantScale: Float, quantZeroPoint: Long): ByteArray {
@@ -31,12 +111,24 @@ class AiliaTFLiteClassificationSample {
                 val r : Int = (pixel shr 16) and 0xFF
                 val g : Int = (pixel shr 8) and 0xFF
                 val b : Int = pixel and 0xFF
-                val r2 : Int = maxOf(0.toInt(), minOf(((r / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
-                val g2 : Int = maxOf(0.toInt(), minOf(((g / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
-                val b2 : Int = maxOf(0.toInt(), minOf(((b / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
-                buffer[(y * inputShape[2] + x) * channels + 0] = r2.toByte()
-                buffer[(y * inputShape[2] + x) * channels + 1] = g2.toByte()
-                buffer[(y * inputShape[2] + x) * channels + 2] = b2.toByte()
+                if (modelType == TFLiteClassificationModelType.RESNET50) {
+                    // ResNet50: Caffe前処理(BGR順・mean減算)+int8量子化
+                    // (ailia-models-tfliteのnormalize_image(normalize_type='Caffe')と同じ)
+                    val bq = maxOf(-128, minOf((((b - 103.939f) / quantScale) + quantZeroPoint).toInt(), 127))
+                    val gq = maxOf(-128, minOf((((g - 116.779f) / quantScale) + quantZeroPoint).toInt(), 127))
+                    val rq = maxOf(-128, minOf((((r - 123.68f) / quantScale) + quantZeroPoint).toInt(), 127))
+                    buffer[(y * inputShape[2] + x) * channels + 0] = bq.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 1] = gq.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 2] = rq.toByte()
+                } else {
+                    // MobileNetV2: [-1, 1]正規化(RGB順)
+                    val r2 : Int = maxOf(0.toInt(), minOf(((r / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
+                    val g2 : Int = maxOf(0.toInt(), minOf(((g / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
+                    val b2 : Int = maxOf(0.toInt(), minOf(((b / 127.5f - 1.0f) / quantScale + quantZeroPoint).toInt(), 255.toInt()))
+                    buffer[(y * inputShape[2] + x) * channels + 0] = r2.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 1] = g2.toByte()
+                    buffer[(y * inputShape[2] + x) * channels + 2] = b2.toByte()
+                }
             }
         }
         return buffer

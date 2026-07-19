@@ -92,6 +92,11 @@ class MainActivity : AppCompatActivity() {
     private var multimodalLLMSample = AiliaMultimodalLLMSample()
     private var onnxObjectDetectionSample = AiliaOnnxObjectDetectionSample()
     private var onnxClassificationSample = AiliaOnnxClassificationSample()
+    private var u2netSample = AiliaU2NetSample()
+    private var detrSample = AiliaDetrSample()
+
+    // ObjectDetectionのONNXモデルとしてDETRを使うかどうか(falseならYOLOX)
+    private var useDetr = false
 
     private var selectedEnvId: Int = 0
     private var selectedRuntime: String = "TFLite"
@@ -148,6 +153,7 @@ class MainActivity : AppCompatActivity() {
         TRACKING,
         TOKENIZE,
         CLASSIFICATION,
+        BACKGROUND_REMOVAL,
         SPEECH_TO_TEXT,
         TEXT_TO_SPEECH,
         LLM,
@@ -197,6 +203,9 @@ class MainActivity : AppCompatActivity() {
         val modelDir = (getExternalFilesDir(null) ?: filesDir).absolutePath
         onnxObjectDetectionSample.modelDir = modelDir
         onnxClassificationSample.modelDir = modelDir
+        classificationSample.modelDir = modelDir
+        u2netSample.modelDir = modelDir
+        detrSample.modelDir = modelDir
         miniLMv2Sample.modelDir = modelDir
         speechSample.modelDir = modelDir
         voiceSample.modelDir = modelDir
@@ -262,6 +271,7 @@ class MainActivity : AppCompatActivity() {
             "Tracking",
             "Tokenize",
             "Classification",
+            "BackgroundRemoval",
             "Speech2Text",
             "Text2Speech",
             "LLM",
@@ -340,6 +350,7 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.OBJECT_DETECTION,
             AlgorithmType.TRACKING,
             AlgorithmType.CLASSIFICATION,
+            AlgorithmType.BACKGROUND_REMOVAL,
             AlgorithmType.TOKENIZE -> true
             else -> false
         }
@@ -458,7 +469,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateEnvSpinner(algorithm: AlgorithmType) {
         when (algorithm) {
-            AlgorithmType.POSE_ESTIMATION -> {
+            AlgorithmType.POSE_ESTIMATION, AlgorithmType.BACKGROUND_REMOVAL -> {
                 setupOnnxEnvSpinner(useBlas = false)
             }
 
@@ -531,18 +542,31 @@ class MainActivity : AppCompatActivity() {
                 arrayOf("LightweightHumanPose")
             }
             AlgorithmType.OBJECT_DETECTION -> {
-                selectedIndex = if (selectedRuntime == "ONNX") 1 else 0
-                arrayOf("YOLOX-S (TFLite)", "YOLOX-S (ONNX)")
+                selectedIndex = when {
+                    selectedRuntime == "ONNX" && useDetr -> 2
+                    selectedRuntime == "ONNX" -> 1
+                    else -> 0
+                }
+                arrayOf("YOLOX-S (TFLite)", "YOLOX-S (ONNX)", "DETR ResNet50 (ONNX)")
             }
             AlgorithmType.TRACKING -> {
                 selectedIndex = if (selectedRuntime == "ONNX") 1 else 0
                 arrayOf("YOLOX-S + ByteTrack (TFLite)", "YOLOX-S + ByteTrack (ONNX)")
             }
             AlgorithmType.CLASSIFICATION -> {
-                selectedIndex = if (selectedRuntime == "ONNX") 1 else 0
-                arrayOf("MobileNetV2 (TFLite)", "MobileNetV2 (ONNX)")
+                selectedIndex = when {
+                    selectedRuntime == "TFLite" && classificationSample.modelType == TFLiteClassificationModelType.RESNET50 -> 1
+                    selectedRuntime == "TFLite" -> 0
+                    onnxClassificationSample.modelType == OnnxClassificationModelType.RESNET50 -> 3
+                    else -> 2
+                }
+                arrayOf("MobileNetV2 (TFLite)", "ResNet50 (TFLite)", "MobileNetV2 (ONNX)", "ResNet50 (ONNX)")
             }
             AlgorithmType.TOKENIZE -> arrayOf("Multilingual MiniLMv2 (L12)")
+            AlgorithmType.BACKGROUND_REMOVAL -> {
+                selectedRuntime = "ONNX"
+                arrayOf("U-2-Net")
+            }
             AlgorithmType.SPEECH_TO_TEXT -> {
                 selectedIndex = SpeechModelType.values().indexOf(selectedSpeechModelType)
                 SpeechModelType.values().map { it.displayName }.toTypedArray()
@@ -576,10 +600,56 @@ class MainActivity : AppCompatActivity() {
     /** モデル選択スピナーの選択変更を各アルゴリズムに反映する */
     private fun onModelSelected(algorithm: AlgorithmType, position: Int) {
         when (algorithm) {
-            AlgorithmType.OBJECT_DETECTION, AlgorithmType.CLASSIFICATION, AlgorithmType.TRACKING -> {
+            AlgorithmType.OBJECT_DETECTION -> {
+                val newRuntime = if (position >= 1) "ONNX" else "TFLite"
+                val newUseDetr = position == 2
+                if (newRuntime != selectedRuntime || newUseDetr != useDetr) {
+                    selectedRuntime = newRuntime
+                    useDetr = newUseDetr
+                    updateEnvSpinner(algorithm)
+                    isInitialized = false
+                    isDownloadingModel.set(false)
+                    resetRunState()
+                    val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
+                    if (isImageMode) {
+                        releaseCurrentAlgorithm()
+                        processImageMode()
+                    } else {
+                        cameraExecutor.execute {
+                            releaseCurrentAlgorithm()
+                        }
+                    }
+                }
+            }
+            AlgorithmType.TRACKING -> {
                 val newRuntime = if (position == 1) "ONNX" else "TFLite"
                 if (newRuntime != selectedRuntime) {
                     selectedRuntime = newRuntime
+                    updateEnvSpinner(algorithm)
+                    isInitialized = false
+                    isDownloadingModel.set(false)
+                    resetRunState()
+                    val isImageMode = modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton
+                    if (isImageMode) {
+                        releaseCurrentAlgorithm()
+                        processImageMode()
+                    } else {
+                        cameraExecutor.execute {
+                            releaseCurrentAlgorithm()
+                        }
+                    }
+                }
+            }
+            AlgorithmType.CLASSIFICATION -> {
+                val newRuntime = if (position <= 1) "TFLite" else "ONNX"
+                val newTfliteModel = if (position == 1) TFLiteClassificationModelType.RESNET50 else TFLiteClassificationModelType.MOBILENETV2
+                val newOnnxModel = if (position == 3) OnnxClassificationModelType.RESNET50 else OnnxClassificationModelType.MOBILENETV2
+                if (newRuntime != selectedRuntime ||
+                    newTfliteModel != classificationSample.modelType ||
+                    newOnnxModel != onnxClassificationSample.modelType) {
+                    selectedRuntime = newRuntime
+                    classificationSample.modelType = newTfliteModel
+                    onnxClassificationSample.modelType = newOnnxModel
                     updateEnvSpinner(algorithm)
                     isInitialized = false
                     isDownloadingModel.set(false)
@@ -618,7 +688,7 @@ class MainActivity : AppCompatActivity() {
                     voiceWaveformView.clear()
                     voiceReplayButton.visibility = View.GONE
                     voiceResultTextView.text = ""
-                    voiceInputEditText.setText(defaultVoiceText(newType))
+                    voiceInputEditText.setText(newType.defaultText)
                     voiceStatusTextView.text = "Status: Press Generate to download model and synthesize"
                 }
             }
@@ -667,7 +737,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             AlgorithmType.OBJECT_DETECTION -> {
-                if (selectedRuntime == "ONNX") {
+                if (selectedRuntime == "ONNX" && useDetr) {
+                    detrSample.processObjectDetection(bitmap, canvas, paint2, textPaint, w, h)
+                } else if (selectedRuntime == "ONNX") {
                     onnxObjectDetectionSample.processObjectDetection(
                         img, bitmap, canvas, paint2, textPaint, w, h
                     )
@@ -694,6 +766,10 @@ class MainActivity : AppCompatActivity() {
                     }
                     time
                 }
+            }
+
+            AlgorithmType.BACKGROUND_REMOVAL -> {
+                u2netSample.process(bitmap, canvas, w, h)
             }
 
             AlgorithmType.TOKENIZE -> {
@@ -1154,7 +1230,7 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.TEXT_TO_SPEECH -> {
                 setupVoiceGenerateButton()
                 setupVoiceReplayButton()
-                voiceInputEditText.setText(defaultVoiceText(selectedVoiceModelType))
+                voiceInputEditText.setText(selectedVoiceModelType.defaultText)
             }
             AlgorithmType.LLM -> {
                 setupLLMSendButton()
@@ -1178,6 +1254,8 @@ class MainActivity : AppCompatActivity() {
             classificationSample.releaseClassification()
             onnxObjectDetectionSample.releaseObjectDetection()
             onnxClassificationSample.releaseClassification()
+            u2netSample.release()
+            detrSample.release()
             miniLMv2Sample.release()
             trackerSample.releaseTracker()
             speechSample.releaseSpeech()
@@ -1243,7 +1321,56 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 AlgorithmType.OBJECT_DETECTION -> {
-                    if (selectedRuntime == "ONNX") {
+                    if (selectedRuntime == "ONNX" && useDetr) {
+                        // DETRはダウンロードが必要なため非同期で初期化する
+                        if (isDownloadingModel.get()) return
+                        isDownloadingModel.set(true)
+                        runOnUiThread {
+                            processingTimeTextView.text = "Downloading DETR model..."
+                        }
+                        cameraExecutor.execute {
+                            try {
+                                val downloaded = detrSample.downloadModel(object : AiliaDetrSample.DownloadListener {
+                                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                                        val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
+                                        runOnUiThread {
+                                            processingTimeTextView.text = "Downloading $fileName... $percent%"
+                                        }
+                                    }
+                                    override fun onComplete() {}
+                                    override fun onError(error: String) {
+                                        runOnUiThread {
+                                            processingTimeTextView.text = "Download error: $error"
+                                        }
+                                    }
+                                })
+                                if (downloaded) {
+                                    val success = detrSample.initialize(selectedEnvId)
+                                    isInitialized = success
+                                    isDownloadingModel.set(false)
+                                    runOnUiThread {
+                                        if (success) {
+                                            processingTimeTextView.text = "DETR model ready"
+                                            if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
+                                                processImageMode()
+                                            }
+                                        } else {
+                                            processingTimeTextView.text = "Failed to initialize DETR"
+                                        }
+                                    }
+                                } else {
+                                    isDownloadingModel.set(false)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("AILIA_Main", "DETR: exception in cameraExecutor", e)
+                                isDownloadingModel.set(false)
+                                runOnUiThread {
+                                    processingTimeTextView.text = "Error: ${e.message}"
+                                }
+                            }
+                        }
+                        return
+                    } else if (selectedRuntime == "ONNX") {
                         if (isDownloadingModel.get()) return
                         isDownloadingModel.set(true)
                         runOnUiThread {
@@ -1353,6 +1480,55 @@ class MainActivity : AppCompatActivity() {
                                 }
                             } catch (e: Exception) {
                                 Log.e("AILIA_Main", "ONNX Classification: exception in cameraExecutor", e)
+                                isDownloadingModel.set(false)
+                                runOnUiThread {
+                                    processingTimeTextView.text = "Error: ${e.message}"
+                                }
+                            }
+                        }
+                        return
+                    } else if (classificationSample.modelType == TFLiteClassificationModelType.RESNET50) {
+                        // ResNet50 (TFLite/int8) はダウンロードが必要なため非同期で初期化する
+                        if (isDownloadingModel.get()) return
+                        isDownloadingModel.set(true)
+                        runOnUiThread {
+                            processingTimeTextView.text = "Downloading TFLite model..."
+                        }
+                        cameraExecutor.execute {
+                            try {
+                                val downloaded = classificationSample.downloadModel(object : AiliaTFLiteClassificationSample.DownloadListener {
+                                    override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                                        val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
+                                        runOnUiThread {
+                                            processingTimeTextView.text = "Downloading $fileName... $percent%"
+                                        }
+                                    }
+                                    override fun onComplete() {}
+                                    override fun onError(error: String) {
+                                        runOnUiThread {
+                                            processingTimeTextView.text = "Download error: $error"
+                                        }
+                                    }
+                                })
+                                if (downloaded) {
+                                    val success = classificationSample.initializeFromFile(env = selectedEnvId)
+                                    isInitialized = success
+                                    isDownloadingModel.set(false)
+                                    runOnUiThread {
+                                        if (success) {
+                                            processingTimeTextView.text = "TFLite model ready"
+                                            if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
+                                                processImageMode()
+                                            }
+                                        } else {
+                                            processingTimeTextView.text = "Failed to initialize TFLite model"
+                                        }
+                                    }
+                                } else {
+                                    isDownloadingModel.set(false)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("AILIA_Main", "TFLite ResNet50: exception in cameraExecutor", e)
                                 isDownloadingModel.set(false)
                                 runOnUiThread {
                                     processingTimeTextView.text = "Error: ${e.message}"
@@ -1486,6 +1662,57 @@ class MainActivity : AppCompatActivity() {
                             isInitialized = trackerSample.initializeTracker()
                         }
                     }
+                }
+
+                AlgorithmType.BACKGROUND_REMOVAL -> {
+                    // U-2-Netはダウンロードが必要なため非同期で初期化する
+                    if (isDownloadingModel.get()) return
+                    isDownloadingModel.set(true)
+                    runOnUiThread {
+                        processingTimeTextView.text = "Downloading U-2-Net model..."
+                    }
+                    cameraExecutor.execute {
+                        try {
+                            val downloaded = u2netSample.downloadModel(object : AiliaU2NetSample.DownloadListener {
+                                override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
+                                    val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
+                                    runOnUiThread {
+                                        processingTimeTextView.text = "Downloading $fileName... $percent%"
+                                    }
+                                }
+                                override fun onComplete() {}
+                                override fun onError(error: String) {
+                                    runOnUiThread {
+                                        processingTimeTextView.text = "Download error: $error"
+                                    }
+                                }
+                            })
+                            if (downloaded) {
+                                val success = u2netSample.initialize(selectedEnvId)
+                                isInitialized = success
+                                isDownloadingModel.set(false)
+                                runOnUiThread {
+                                    if (success) {
+                                        processingTimeTextView.text = "U-2-Net model ready"
+                                        if (modeRadioGroup.checkedRadioButtonId == R.id.imageRadioButton) {
+                                            processImageMode()
+                                        }
+                                    } else {
+                                        processingTimeTextView.text = "Failed to initialize U-2-Net"
+                                    }
+                                }
+                            } else {
+                                isDownloadingModel.set(false)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("AILIA_Main", "U2Net: exception in cameraExecutor", e)
+                            isDownloadingModel.set(false)
+                            runOnUiThread {
+                                processingTimeTextView.text = "Error: ${e.message}"
+                            }
+                        }
+                    }
+                    return
                 }
 
                 AlgorithmType.SPEECH_TO_TEXT -> {
@@ -1768,31 +1995,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 各Voiceモデルのデフォルト入力テキスト(V1は英語モデルのため英文) */
-    private fun defaultVoiceText(type: VoiceModelType): String {
-        return if (type == VoiceModelType.GPT_SOVITS_V1) {
-            "Hello world. We will introduce ailia AI voice."
-        } else {
-            "こんにちは。今日はいい天気ですね。"
-        }
-    }
-
-    /**
-     * 入力テキストが日本語か英語かを判定してG2Pの言語を返す。
-     * ひらがな/カタカナ/漢字が含まれていれば"ja"、それ以外は"en"。
-     */
-    private fun detectVoiceTextLanguage(text: String): String {
-        for (ch in text) {
-            val block = Character.UnicodeBlock.of(ch)
-            if (block == Character.UnicodeBlock.HIRAGANA ||
-                block == Character.UnicodeBlock.KATAKANA ||
-                block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS) {
-                return "ja"
-            }
-        }
-        return "en"
-    }
-
     private fun setupVoiceReplayButton() {
         voiceReplayButton.setOnClickListener {
             val audio = voiceSample.lastAudioData ?: return@setOnClickListener
@@ -1849,7 +2051,7 @@ class MainActivity : AppCompatActivity() {
 
                 val refAudio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.reference_audio_girl))
                 // 入力テキストの日英を判定してG2Pの言語を切り替える
-                val textLang = detectVoiceTextLanguage(inputText)
+                val textLang = AiliaVoiceSample.detectLanguage(inputText)
                 val inferenceTime = voiceSample.textToSpeech(
                     refAudio.audioData,
                     refAudio.channels,
@@ -2287,7 +2489,17 @@ class MainActivity : AppCompatActivity() {
         // 非同期モデルダウンロードが必要なモード
         if (selectedRuntime == "ONNX" && (currentAlgorithm == AlgorithmType.OBJECT_DETECTION ||
                     currentAlgorithm == AlgorithmType.CLASSIFICATION ||
+                    currentAlgorithm == AlgorithmType.BACKGROUND_REMOVAL ||
                     currentAlgorithm == AlgorithmType.TRACKING)) {
+            if (!isInitialized) {
+                initializeAilia()
+                return
+            }
+        }
+
+        // TFLiteのResNet50もダウンロードが必要なため非同期で初期化する
+        if (currentAlgorithm == AlgorithmType.CLASSIFICATION && selectedRuntime == "TFLite" &&
+            classificationSample.modelType == TFLiteClassificationModelType.RESNET50) {
             if (!isInitialized) {
                 initializeAilia()
                 return
@@ -2453,21 +2665,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    fun cropToSquare(bitmap: Bitmap): Bitmap {
-        val width = bitmap.width
-        val height = bitmap.height
-
-        // 正方形のサイズは、元のBitmapの幅と高さのうち小さい方に合わせます
-        val newSize = if (width < height) width else height
-
-        // 中央を基準にクロップするための開始XとYを計算します
-        val startX = (width - newSize) / 2
-        val startY = (height - newSize) / 2
-
-        // Bitmapをクロップして正方形の新しいBitmapを作成します
-        return Bitmap.createBitmap(bitmap, startX, startY, newSize, newSize)
-    }
-
     private inner class CameraFrameAnalyzer : ImageAnalysis.Analyzer {
         override fun analyze(image: ImageProxy) {
             // MultimodalLLMはプレビュー表示とフレーム保持のみ行う(推論はSend押下時)
@@ -2509,8 +2706,9 @@ class MainActivity : AppCompatActivity() {
             try {
                 // フロントカメラはPreviewViewと同じ鏡像表示になるよう左右反転する
                 val isFrontCamera = cameraChoices[selectedCameraIndex].selector == CameraSelector.DEFAULT_FRONT_CAMERA
-                var camera_bitmap = ImageUtil().imageProxyToBitmap(image, mirror = isFrontCamera)
-                camera_bitmap = cropToSquare(camera_bitmap)
+                val imageUtil = ImageUtil()
+                var camera_bitmap = imageUtil.imageProxyToBitmap(image, mirror = isFrontCamera)
+                camera_bitmap = imageUtil.cropToSquare(camera_bitmap)
 
                 val img = ImageUtil().loadRawImage(camera_bitmap)
                 val w = camera_bitmap.width

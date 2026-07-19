@@ -23,11 +23,12 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import kotlin.math.roundToInt
 
-enum class VoiceModelType(val displayName: String) {
-    GPT_SOVITS_V1("GPT-SoVITS V1"),
-    GPT_SOVITS_V2("GPT-SoVITS V2"),
-    GPT_SOVITS_V3("GPT-SoVITS V3"),
-    GPT_SOVITS_V2_PRO("GPT-SoVITS V2-Pro"),
+enum class VoiceModelType(val displayName: String, val defaultText: String) {
+    // V1は英語モデルのためデフォルトは英文
+    GPT_SOVITS_V1("GPT-SoVITS V1", "Hello world. We will introduce ailia AI voice."),
+    GPT_SOVITS_V2("GPT-SoVITS V2", "こんにちは。今日はいい天気ですね。"),
+    GPT_SOVITS_V3("GPT-SoVITS V3", "こんにちは。今日はいい天気ですね。"),
+    GPT_SOVITS_V2_PRO("GPT-SoVITS V2-Pro", "こんにちは。今日はいい天気ですね。"),
 }
 
 class AiliaVoiceSample {
@@ -35,6 +36,22 @@ class AiliaVoiceSample {
         private const val TAG = "AILIA_Main"
         private var voice: AiliaVoice? = null
         private var isInitialized = false
+
+        /**
+         * 入力テキストが日本語か英語かを判定してG2Pの言語("ja"/"en")を返す。
+         * ひらがな/カタカナ/漢字が含まれていれば日本語と判定する。
+         */
+        fun detectLanguage(text: String): String {
+            for (ch in text) {
+                val block = Character.UnicodeBlock.of(ch)
+                if (block == Character.UnicodeBlock.HIRAGANA ||
+                    block == Character.UnicodeBlock.KATAKANA ||
+                    block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS) {
+                    return "ja"
+                }
+            }
+            return "en"
+        }
     }
 
     interface DownloadListener {

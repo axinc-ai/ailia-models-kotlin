@@ -24,13 +24,14 @@ git submodule update
 |Category|Model|SDK|
 |-----|-----|-----|
 |Pose Estimation|[Light Weight Human Pose Estimation](app/src/main/java/jp/axinc/ailia_kotlin/AiliaPoseEstimatorSample.kt)|ailia SDK (ONNX)|
-|Object Detection|[YOLOX (TFLite)](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTFLiteObjectDetectionSample.kt) / [YOLOX (ONNX)](app/src/main/java/jp/axinc/ailia_kotlin/AiliaOnnxObjectDetectionSample.kt)|ailia TFLite Runtime / ailia SDK (ONNX)|
+|Object Detection|[YOLOX (TFLite)](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTFLiteObjectDetectionSample.kt) / [YOLOX (ONNX)](app/src/main/java/jp/axinc/ailia_kotlin/AiliaOnnxObjectDetectionSample.kt) / [DETR (ONNX)](app/src/main/java/jp/axinc/ailia_kotlin/AiliaDetrSample.kt)|ailia TFLite Runtime / ailia SDK (ONNX)|
 |Object Tracking|[ByteTrack](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTrackerSample.kt)|ailia TFLite Runtime / ailia SDK (ONNX) + ailia Tracker|
-|Image Classification|[MobileNetV2 (TFLite)](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTFLiteClassificationSample.kt) / [MobileNetV2 (ONNX)](app/src/main/java/jp/axinc/ailia_kotlin/AiliaOnnxClassificationSample.kt)|ailia TFLite Runtime / ailia SDK (ONNX)|
+|Image Classification|[MobileNetV2 / ResNet50 (TFLite)](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTFLiteClassificationSample.kt) / [MobileNetV2 / ResNet50 (ONNX)](app/src/main/java/jp/axinc/ailia_kotlin/AiliaOnnxClassificationSample.kt)|ailia TFLite Runtime / ailia SDK (ONNX)|
+|Background Removal|[U-2-Net](app/src/main/java/jp/axinc/ailia_kotlin/AiliaU2NetSample.kt)|ailia SDK (ONNX)|
 |Zero-Shot Classification|[multilingual-MiniLMv2](app/src/main/java/jp/axinc/ailia_kotlin/AiliaMiniLMv2Sample.kt)|ailia Tokenizer + ailia SDK (ONNX)|
 |Speech to Text|[Whisper](app/src/main/java/jp/axinc/ailia_kotlin/AiliaSpeechSample.kt) / [SenseVoice](app/src/main/java/jp/axinc/ailia_kotlin/AiliaSpeechSample.kt)|ailia AI Speech|
 |Text to Speech|[GPT-SoVITS](app/src/main/java/jp/axinc/ailia_kotlin/AiliaVoiceSample.kt)|ailia AI Voice|
-|LLM|[Gemma 2 2B](app/src/main/java/jp/axinc/ailia_kotlin/AiliaLLMSample.kt)|ailia LLM|
+|LLM|[Gemma 4 E2B / Gemma 4 E4B / Gemma 2 2B](app/src/main/java/jp/axinc/ailia_kotlin/AiliaLLMSample.kt)|ailia LLM|
 |Multimodal LLM|[Gemma 3 4B](app/src/main/java/jp/axinc/ailia_kotlin/AiliaMultimodalLLMSample.kt)|ailia LLM|
 
 ## Screenshots

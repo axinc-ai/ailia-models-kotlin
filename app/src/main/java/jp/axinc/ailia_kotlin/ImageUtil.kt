@@ -33,6 +33,16 @@ public class ImageUtil {
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }
 
+    /** 中央を基準に正方形へクロップする */
+    fun cropToSquare(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val newSize = if (width < height) width else height
+        val startX = (width - newSize) / 2
+        val startY = (height - newSize) / 2
+        return Bitmap.createBitmap(bitmap, startX, startY, newSize, newSize)
+    }
+
     private fun yuv420888ToNv21(image: ImageProxy): ByteArray {
         val pixelCount = image.cropRect.width() * image.cropRect.height()
         val pixelSizeBits = ImageFormat.getBitsPerPixel(ImageFormat.YUV_420_888)
