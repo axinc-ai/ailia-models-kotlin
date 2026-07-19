@@ -267,7 +267,9 @@ class AiliaSpeechSample {
             val errorDetail = speech?.getErrorDetail()
             Log.e(TAG, "Speech transcribe error detail: $errorDetail")
         }
-        return collectTextLines()
+        val lines = collectTextLines()
+        speech?.resetTranscribeState()
+        return lines
     }
 
     /**
@@ -276,15 +278,21 @@ class AiliaSpeechSample {
      * Returns transcript lines confirmed by this call.
      */
     fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int): List<String> {
-        val pushResult = speech?.pushInputData(audio, channels, audio.size / channels, sampleRate)
+        val engine = speech ?: return emptyList()
+        val pushResult = engine.pushInputData(audio, channels, audio.size / channels, sampleRate)
         Log.d(TAG, "Speech pushLiveAudio: pushInputData result=$pushResult, samples=${audio.size / channels}")
-        val transcribeResult = speech?.transcribe()
-        Log.d(TAG, "Speech pushLiveAudio: transcribe result=$transcribeResult")
-        if (transcribeResult != null && transcribeResult != 0) {
-            val errorDetail = speech?.getErrorDetail()
-            Log.e(TAG, "Speech pushLiveAudio transcribe error: $errorDetail")
+
+        val lines = mutableListOf<String>()
+        while (engine.getBuffered() != 0) {
+            val transcribeResult = engine.transcribe()
+            Log.d(TAG, "Speech pushLiveAudio: transcribe result=$transcribeResult")
+            if (transcribeResult != 0) {
+                Log.e(TAG, "Speech pushLiveAudio transcribe error: ${engine.getErrorDetail()}")
+                break
+            }
+            lines.addAll(collectTextLines())
         }
-        return collectTextLines()
+        return lines
     }
 
     /**
@@ -292,20 +300,27 @@ class AiliaSpeechSample {
      * Call this when mic recording stops.
      */
     fun finalizeLiveAudio(): List<String> {
-        val finalizeResult = speech?.finalizeInputData()
+        val engine = speech ?: return emptyList()
+        val finalizeResult = engine.finalizeInputData()
         Log.i(TAG, "Speech finalizeLiveAudio: finalizeInputData result=$finalizeResult")
-        val transcribeResult = speech?.transcribe()
-        Log.i(TAG, "Speech finalizeLiveAudio: transcribe result=$transcribeResult")
-        if (transcribeResult != null && transcribeResult != 0) {
-            val errorDetail = speech?.getErrorDetail()
-            Log.e(TAG, "Speech finalizeLiveAudio transcribe error: $errorDetail")
+
+        val lines = mutableListOf<String>()
+        while (engine.getComplete() == 0) {
+            val transcribeResult = engine.transcribe()
+            Log.i(TAG, "Speech finalizeLiveAudio: transcribe result=$transcribeResult")
+            if (transcribeResult != 0) {
+                Log.e(TAG, "Speech finalizeLiveAudio transcribe error: ${engine.getErrorDetail()}")
+                break
+            }
+            lines.addAll(collectTextLines())
         }
-        return collectTextLines()
+        engine.resetTranscribeState()
+        return lines
     }
 
     /**
      * 16kHz/mono/PCM_FLOATでマイク録音を開始する。
-     * 波形用には100msごと、音声認識には1秒ごとにデータを通知・投入する。
+     * Flutter版と同様に短いチャンクを逐次投入し、SDKが処理可能になった時だけ認識する。
      */
     @SuppressLint("MissingPermission")
     fun startMicRecording(listener: MicRecordingListener): Boolean {
@@ -320,8 +335,8 @@ class AiliaSpeechSample {
 
         val sampleRate = 16000
         val readChunkSize = sampleRate / 10
-        val recognitionChunkSize = sampleRate
-        val audioRecordBufferBytes = recognitionChunkSize * Float.SIZE_BYTES * 2
+        val recognitionChunkSize = readChunkSize
+        val audioRecordBufferBytes = sampleRate * Float.SIZE_BYTES * 2
 
         return try {
             val recorder = AudioRecord(
@@ -577,7 +592,6 @@ class AiliaSpeechSample {
                 lines.add("$stamp ${text.text}")
             }
         }
-        speech?.resetTranscribeState()
         Log.i(TAG, "Speech result lines: $lines")
         return lines
     }
