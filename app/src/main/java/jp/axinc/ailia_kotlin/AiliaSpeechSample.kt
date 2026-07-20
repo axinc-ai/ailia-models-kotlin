@@ -11,6 +11,7 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 import axip.ailia_speech.AiliaSpeech
 import axip.ailia_speech.AiliaSpeechText
@@ -67,7 +68,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
     interface MicRecordingListener {
         fun onWaveform(samples: FloatArray, sampleRate: Int)
         fun onIntermediateResult(text: String)
-        fun onResult(lines: List<String>, isFinal: Boolean)
+        fun onResult(lines: List<String>, isFinal: Boolean, processingTimeMs: Long)
         fun onError(error: String)
     }
 
@@ -92,6 +93,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
     private val micRecording = AtomicBoolean(false)
     private val micSessionActive = AtomicBoolean(false)
     private val finalizeMicInput = AtomicBoolean(true)
+    private val micProcessingTimeNanos = AtomicLong(0)
     private var liveModeEnabled = false
     private var speechIntermediateCallback: IntermediateCallback? = null
     var currentModelType: SpeechModelType = DEFAULT_MODEL_TYPE
@@ -338,6 +340,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
                 audioRecord = recorder
             }
             finalizeMicInput.set(true)
+            micProcessingTimeNanos.set(0)
             micRecognitionExecutor = newMicExecutor("ailia-speech-recognition", android.os.Process.THREAD_PRIORITY_BACKGROUND)
             micReadExecutor = newMicExecutor("ailia-speech-recording", android.os.Process.THREAD_PRIORITY_AUDIO)
             recorder.startRecording()
@@ -463,9 +466,13 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         micRecognitionExecutor?.execute {
             if (!isInitialized) return@execute
             try {
+                val startTime = System.nanoTime()
                 val lines = pushLiveAudio(chunk, 1, sampleRate)
+                val processingTimeMs = micProcessingTimeNanos.addAndGet(
+                    System.nanoTime() - startTime
+                ) / 1_000_000
                 if (lines.isNotEmpty()) {
-                    listener.onResult(lines, false)
+                    listener.onResult(lines, false, processingTimeMs)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "pushLiveAudio failed", e)
@@ -487,13 +494,28 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         executor.execute {
             try {
                 if (isInitialized && tail.isNotEmpty()) {
+                    val startTime = System.nanoTime()
                     val lines = pushLiveAudio(tail, 1, sampleRate)
+                    val processingTimeMs = micProcessingTimeNanos.addAndGet(
+                        System.nanoTime() - startTime
+                    ) / 1_000_000
                     if (lines.isNotEmpty()) {
-                        listener.onResult(lines, false)
+                        listener.onResult(lines, false, processingTimeMs)
                     }
                 }
-                val finalLines = if (isInitialized) finalizeLiveAudio() else emptyList()
-                listener.onResult(finalLines, true)
+                val finalLines = if (isInitialized) {
+                    val startTime = System.nanoTime()
+                    val lines = finalizeLiveAudio()
+                    micProcessingTimeNanos.addAndGet(System.nanoTime() - startTime)
+                    lines
+                } else {
+                    emptyList()
+                }
+                listener.onResult(
+                    finalLines,
+                    true,
+                    micProcessingTimeNanos.get() / 1_000_000,
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "finalizeLiveAudio failed", e)
                 listener.onError(e.message ?: "Failed to finalize live speech recognition")

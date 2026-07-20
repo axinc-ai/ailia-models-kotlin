@@ -119,12 +119,16 @@ class InferencePostProcessTest {
     @Test
     fun downloadProgressDisplaysMegabytes() {
         assertEquals(
-            "Downloading 1.0 / 2.0 MB",
-            formatDownloadProgress(1024L * 1024L, 2L * 1024L * 1024L),
+            "Downloading model.onnx 1.0 / 2.0 MB",
+            formatDownloadProgress("model.onnx", 1024L * 1024L, 2L * 1024L * 1024L),
         )
         assertEquals(
-            "Downloading 1.5 MB",
-            formatDownloadProgress(1536L * 1024L, -1L),
+            "Downloading model.onnx 1.5 MB",
+            formatDownloadProgress("model.onnx", 1536L * 1024L, -1L),
+        )
+        assertEquals(
+            "Downloading 0.0 MB",
+            formatDownloadProgress(null, 0L, -1L),
         )
     }
 
