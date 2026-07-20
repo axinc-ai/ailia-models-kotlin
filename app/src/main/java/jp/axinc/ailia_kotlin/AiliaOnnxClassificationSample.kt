@@ -1,83 +1,75 @@
 package jp.axinc.ailia_kotlin
 
-import android.graphics.Bitmap
 import android.util.Log
 import axip.ailia.*
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import kotlin.math.exp
 
-class AiliaOnnxClassificationSample {
+/**
+ * ONNXの画像分類モデル定義。
+ * range はailia-models(Python版)のClassifier設定に合わせる
+ * (MobileNetV2: IMAGENET, resnet50.opt: SIGNED_INT8,
+ * ViT-B/16: SIGNED_FP32[-1, 1])。
+ */
+enum class OnnxClassificationModelType(
+    val displayName: String,
+    val weightUrl: String,
+    val weightFile: String,
+    val protoUrl: String,
+    val protoFile: String,
+    val range: AiliaNetworkImageRange
+) {
+    MOBILENETV2(
+        "MobileNetV2",
+        "https://storage.googleapis.com/ailia-models/mobilenetv2/mobilenetv2_1.0.onnx",
+        "mobilenetv2_1.0.onnx",
+        "https://storage.googleapis.com/ailia-models/mobilenetv2/mobilenetv2_1.0.onnx.prototxt",
+        "mobilenetv2_1.0.onnx.prototxt",
+        AiliaNetworkImageRange.IMAGENET
+    ),
+    RESNET50(
+        "ResNet50",
+        "https://storage.googleapis.com/ailia-models/resnet50/resnet50.opt.onnx",
+        "resnet50.opt.onnx",
+        "https://storage.googleapis.com/ailia-models/resnet50/resnet50.opt.onnx.prototxt",
+        "resnet50.opt.onnx.prototxt",
+        AiliaNetworkImageRange.SIGNED_INT8
+    ),
+    VIT_B16(
+        "ViT-B/16",
+        "https://storage.googleapis.com/ailia-models/vit/ViT-B_16-224.onnx",
+        "ViT-B_16-224.onnx",
+        "https://storage.googleapis.com/ailia-models/vit/ViT-B_16-224.onnx.prototxt",
+        "ViT-B_16-224.onnx.prototxt",
+        AiliaNetworkImageRange.SIGNED_FP32
+    ),
+}
+
+class AiliaOnnxClassificationSample(private val modelDirectory: File) {
     companion object {
         private const val TAG = "AILIA_Main"
-        private const val MODEL_URL = "https://storage.googleapis.com/ailia-models/mobilenetv2/mobilenetv2_1.0.onnx"
-        private const val MODEL_FILE = "mobilenetv2_1.0.onnx"
-        private const val PROTO_URL = "https://storage.googleapis.com/ailia-models/mobilenetv2/mobilenetv2_1.0.onnx.prototxt"
-        private const val PROTO_FILE = "mobilenetv2_1.0.onnx.prototxt"
+        init { System.loadLibrary("ailia") }
     }
 
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
+    var modelType: OnnxClassificationModelType = OnnxClassificationModelType.MOBILENETV2
 
     private var ailia: AiliaModel? = null
     private var classifier: AiliaClassifierModel? = null
     private var isInitialized = false
     private var lastClassificationResult: String = ""
-    var modelDir: String = ""
 
-    private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): Boolean {
-        val dir = modelDir
-        val path = "$dir/$fileName"
-        val file = File(path)
-        if (file.exists()) {
-            if (file.canRead()) {
-                Log.i(TAG, "Model file already exists and readable: $path (${file.length()} bytes)")
-                return true
-            } else {
-                Log.w(TAG, "Model file exists but not readable, re-downloading: $path")
-                file.delete()
-            }
-        }
-        File(path).parentFile?.mkdirs()
-        val tmpFile = File("$path.tmp")
-        val url = URL(urlStr)
-        val connection = url.openConnection() as HttpURLConnection
-        connection.connectTimeout = 30000
-        connection.readTimeout = 60000
-        connection.connect()
-        val totalBytes = connection.contentLengthLong
-        connection.inputStream.use { input ->
-            FileOutputStream(tmpFile).use { output ->
-                val buffer = ByteArray(8192)
-                var bytesDownloaded: Long = 0
-                var bytesRead: Int
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    output.write(buffer, 0, bytesRead)
-                    bytesDownloaded += bytesRead
-                    listener?.onProgress(fileName, bytesDownloaded, totalBytes)
-                }
-            }
-        }
-        tmpFile.renameTo(File(path))
-        return true
-    }
-
-    fun downloadModel(listener: DownloadListener? = null): Boolean {
-        try {
-            Log.i(TAG, "Starting ONNX classification model download/check...")
-            downloadFile(PROTO_URL, PROTO_FILE, listener)
-            downloadFile(MODEL_URL, MODEL_FILE, listener)
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
+        return try {
+            Log.i(TAG, "Starting ONNX classification model download/check (${modelType.displayName})...")
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(modelType.protoUrl, modelType.protoFile), listener) != null)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(modelType.weightUrl, modelType.weightFile), listener) != null)
             listener?.onComplete()
             Log.i(TAG, "ONNX classification model download/check complete")
-            return true
+            true
         } catch (e: Exception) {
-            Log.e(TAG, "Model Download Failed: $MODEL_FILE", e)
+            Log.e(TAG, "Model Download Failed: ${modelType.weightFile}", e)
             listener?.onError(e.message ?: "Download failed")
-            return false
+            false
         }
     }
 
@@ -87,58 +79,118 @@ class AiliaOnnxClassificationSample {
         }
 
         return try {
-            val dir = modelDir
-            val protoPath = "$dir/$PROTO_FILE"
-            val modelPath = "$dir/$MODEL_FILE"
+            val protoPath = File(modelDirectory, modelType.protoFile).absolutePath
+            val modelPath = File(modelDirectory, modelType.weightFile).absolutePath
 
             ailia = AiliaModel(envId, Ailia.MULTITHREAD_AUTO, protoPath, modelPath)
 
-            classifier = AiliaClassifierModel(
-                ailia!!.handle,
-                AiliaNetworkImageFormat.RGB,
-                AiliaNetworkImageChannel.FIRST,
-                AiliaNetworkImageRange.IMAGENET
-            )
+            // ViT exposes logits plus one attention tensor per Transformer block.
+            // AiliaClassifierModel assumes a conventional single-output classifier,
+            // so ViT is executed directly through AiliaModel in classifyVit().
+            classifier = if (modelType == OnnxClassificationModelType.VIT_B16) {
+                null
+            } else {
+                AiliaClassifierModel(
+                    ailia!!.handle,
+                    AiliaNetworkImageFormat.RGB,
+                    AiliaNetworkImageChannel.FIRST,
+                    modelType.range
+                )
+            }
 
             isInitialized = true
-            Log.i(TAG, "ONNX Classification initialized successfully with envId=$envId")
+            lastClassificationResult = ""
+            Log.i(TAG, "ONNX Classification (${modelType.displayName}) initialized successfully with envId=$envId")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize ONNX classification: ${e.javaClass.name}: ${e.message}")
+            Log.e(TAG, "Failed to initialize ONNX classification: ${e.javaClass.name}: ${e.message}", e)
             releaseClassification()
             false
         }
     }
 
-    fun processClassification(img: ByteArray, w: Int, h: Int): Long {
-        if (!isInitialized || classifier == null) {
+    /** Compatibility wrapper for the demo UI. Use [classify] for typed output. */
+    fun processClassification(img: ByteArray, w: Int, h: Int): Long =
+        classify(img, w, h)?.processingTimeMs ?: -1
+
+    /** Runs classification and returns the top ranked runtime-independent results. */
+    fun classify(img: ByteArray, w: Int, h: Int): ModelInferenceResult<List<ClassificationResult>>? {
+        val currentModel = ailia
+        if (!isInitialized || currentModel == null) {
             Log.e(TAG, "ONNX Classification not initialized")
-            return -1
+            lastClassificationResult = "Error: ONNX Classification is not initialized"
+            return null
         }
 
         return try {
-            val startTime = System.nanoTime()
-            classifier!!.compute(img, w * 4, w, h, AiliaImageFormat.RGBA, 5)
-            val endTime = System.nanoTime()
-
-            val count = classifier!!.classCount
-            if (count > 0) {
-                val topClass = classifier!!.getClass(0)
-                val label = if (topClass.category < CocoAndImageNetLabels.IMAGENET_CATEGORY.size) {
-                    CocoAndImageNetLabels.IMAGENET_CATEGORY[topClass.category]
-                } else {
-                    "class${topClass.category}"
-                }
-                lastClassificationResult = "$label (${String.format("%.2f", topClass.prob)})"
-                Log.i(TAG, "class ${topClass.category} $label confidence ${topClass.prob}")
+            if (modelType == OnnxClassificationModelType.VIT_B16) {
+                classifyVit(currentModel, img, w, h)
             } else {
-                lastClassificationResult = "No classification result"
+                classifyWithClassifier(checkNotNull(classifier), img, w, h)
             }
-
-            (endTime - startTime) / 1000000
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to process ONNX classification: ${e.javaClass.name}: ${e.message}")
-            -1
+            val message = e.message ?: e.javaClass.simpleName
+            lastClassificationResult = "Error: $message"
+            Log.e(TAG, "Failed to process ONNX classification: ${e.javaClass.name}: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun classifyWithClassifier(
+        currentClassifier: AiliaClassifierModel,
+        img: ByteArray,
+        w: Int,
+        h: Int,
+    ): ModelInferenceResult<List<ClassificationResult>>? {
+        val startTime = System.nanoTime()
+        currentClassifier.compute(img, w * 4, w, h, AiliaImageFormat.RGBA, CLASSIFICATION_TOP_COUNT)
+        val processingTimeMs = (System.nanoTime() - startTime) / 1_000_000
+        if (currentClassifier.classCount <= 0) {
+            lastClassificationResult = "No classification result"
+            return null
+        }
+
+        val results = (0 until minOf(CLASSIFICATION_TOP_COUNT, currentClassifier.classCount)).map { rank ->
+            val item = currentClassifier.getClass(rank)
+            val label = ImageNetLabels.CATEGORY.getOrElse(item.category) { "class${item.category}" }
+            ClassificationResult(item.category, label, item.prob)
+        }
+        setLastResults(results)
+        return ModelInferenceResult(results, processingTimeMs)
+    }
+
+    private fun classifyVit(
+        currentModel: AiliaModel,
+        img: ByteArray,
+        w: Int,
+        h: Int,
+    ): ModelInferenceResult<List<ClassificationResult>> {
+        val startTime = System.nanoTime()
+        val input = preprocessVitRgba(img, w, h)
+        val inputIndex = currentModel.getBlobIndexByInputIndex(0)
+        currentModel.setInputBlobShapeND(
+            intArrayOf(1, 3, VIT_INPUT_SIZE, VIT_INPUT_SIZE),
+            inputIndex,
+        )
+        currentModel.setInputBlobData(input, input.size * Float.SIZE_BYTES, inputIndex)
+        currentModel.update()
+
+        // Output 0 is [1, 1000] logits. Remaining outputs are attention tensors.
+        val logitsIndex = currentModel.getBlobIndexByOutputIndex(0)
+        val logitsSize = currentModel.getBlobShapeND(logitsIndex).fold(1) { size, dimension ->
+            Math.multiplyExact(size, dimension)
+        }
+        val logits = FloatArray(logitsSize)
+        currentModel.getBlobData(logits, logits.size * Float.SIZE_BYTES, logitsIndex)
+        val results = decodeVitClassifications(logits)
+        setLastResults(results)
+        return ModelInferenceResult(results, (System.nanoTime() - startTime) / 1_000_000)
+    }
+
+    private fun setLastResults(results: List<ClassificationResult>) {
+        lastClassificationResult = formatClassificationResults(results)
+        results.forEachIndexed { rank, result ->
+            Log.i(TAG, "rank ${rank + 1} class ${result.category} ${result.label} confidence ${result.confidence}")
         }
     }
 
@@ -159,4 +211,69 @@ class AiliaOnnxClassificationSample {
             Log.i(TAG, "ONNX Classification released")
         }
     }
+}
+
+private const val VIT_INPUT_SIZE = 224
+
+/** ViT preprocessing used by ailia-models: bilinear resize, RGB [-1, 1], and BCHW. */
+internal fun preprocessVitRgba(img: ByteArray, width: Int, height: Int): FloatArray {
+    require(width > 0 && height > 0) { "Image dimensions must be positive" }
+    require(img.size >= width * height * 4) { "RGBA image buffer is too small" }
+    val planeSize = VIT_INPUT_SIZE * VIT_INPUT_SIZE
+    val input = FloatArray(3 * planeSize)
+
+    for (dstY in 0 until VIT_INPUT_SIZE) {
+        val sourceY = ((dstY + 0.5f) * height / VIT_INPUT_SIZE - 0.5f).coerceIn(0f, height - 1f)
+        val y0 = sourceY.toInt()
+        val y1 = minOf(y0 + 1, height - 1)
+        val yWeight = sourceY - y0
+        for (dstX in 0 until VIT_INPUT_SIZE) {
+            val sourceX = ((dstX + 0.5f) * width / VIT_INPUT_SIZE - 0.5f).coerceIn(0f, width - 1f)
+            val x0 = sourceX.toInt()
+            val x1 = minOf(x0 + 1, width - 1)
+            val xWeight = sourceX - x0
+            val dstOffset = dstY * VIT_INPUT_SIZE + dstX
+
+            for (channel in 0 until 3) {
+                fun component(x: Int, y: Int): Float =
+                    (img[(y * width + x) * 4 + channel].toInt() and 0xFF).toFloat()
+
+                val top = component(x0, y0) * (1f - xWeight) + component(x1, y0) * xWeight
+                val bottom = component(x0, y1) * (1f - xWeight) + component(x1, y1) * xWeight
+                val value = top * (1f - yWeight) + bottom * yWeight
+                input[channel * planeSize + dstOffset] = value / 127.5f - 1f
+            }
+        }
+    }
+    return input
+}
+
+/** Applies softmax to ViT logits and returns the most probable ImageNet classes. */
+internal fun decodeVitClassifications(
+    logits: FloatArray,
+    labels: Array<String> = ImageNetLabels.CATEGORY,
+    maxResults: Int = CLASSIFICATION_TOP_COUNT,
+): List<ClassificationResult> {
+    require(logits.isNotEmpty()) { "ViT logits are empty" }
+    require(logits.size <= labels.size) { "ViT output has more classes than labels" }
+    require(maxResults > 0) { "maxResults must be positive" }
+    val maxLogit = logits.maxOrNull() ?: error("ViT logits are empty")
+    var probabilitySum = 0.0
+    val exponentials = DoubleArray(logits.size)
+    logits.forEachIndexed { category, logit ->
+        val value = exp((logit - maxLogit).toDouble())
+        exponentials[category] = value
+        probabilitySum += value
+    }
+    require(probabilitySum.isFinite() && probabilitySum > 0.0) { "Invalid ViT logits" }
+    return logits.indices
+        .sortedWith(compareByDescending<Int> { exponentials[it] }.thenBy { it })
+        .take(minOf(maxResults, logits.size))
+        .map { category ->
+            ClassificationResult(
+                category = category,
+                label = labels[category],
+                confidence = (exponentials[category] / probabilitySum).toFloat(),
+            )
+        }
 }

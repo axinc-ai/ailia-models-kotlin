@@ -1,13 +1,20 @@
 package jp.axinc.ailia_kotlin
 
+import android.annotation.SuppressLint
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.Build
 import android.util.Log
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 import axip.ailia_speech.AiliaSpeech
 import axip.ailia_speech.AiliaSpeechText
+import axip.ailia_speech.IntermediateCallback
 
 /**
  * Enum defining available speech recognition models.
@@ -55,15 +62,18 @@ enum class SpeechModelType(
     )
 }
 
-class AiliaSpeechSample {
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
+class AiliaSpeechSample(private val modelDirectory: File) {
+    /** マイク録音中にUIへ返すデータだけを定義する。各コールバックはバックグラウンドスレッドで呼ばれる。 */
+    interface MicRecordingListener {
+        fun onWaveform(samples: FloatArray, sampleRate: Int)
+        fun onIntermediateResult(text: String)
+        fun onResult(lines: List<String>, isFinal: Boolean)
         fun onError(error: String)
     }
 
     companion object {
         private const val TAG = "AILIA_Main"
+        val DEFAULT_MODEL_TYPE: SpeechModelType = SpeechModelType.SENSEVOICE_SMALL
         private const val VAD_URL = "https://storage.googleapis.com/ailia-models/silero-vad/silero_vad_v6_2.onnx"
         private const val VAD_FILE = "silero_vad_v6_2.onnx"
         private const val DIARIZATION_SEGMENTATION_URL = "https://storage.googleapis.com/ailia-models/pyannote-audio/segmentation.onnx"
@@ -73,77 +83,54 @@ class AiliaSpeechSample {
     }
 
     private var speech: AiliaSpeech? = null
+    private val speechLock = Any()
+    @Volatile
     private var isInitialized = false
-    var modelDir: String = ""
-    var currentModelType: SpeechModelType = SpeechModelType.WHISPER_TINY
+    private var audioRecord: AudioRecord? = null
+    private var micReadExecutor: ExecutorService? = null
+    private var micRecognitionExecutor: ExecutorService? = null
+    private val micRecording = AtomicBoolean(false)
+    private val micSessionActive = AtomicBoolean(false)
+    private val finalizeMicInput = AtomicBoolean(true)
+    private var liveModeEnabled = false
+    private var speechIntermediateCallback: IntermediateCallback? = null
+    var currentModelType: SpeechModelType = DEFAULT_MODEL_TYPE
     var diarizationEnabled: Boolean = false
 
-    private fun downloadFile(urlStr: String, fileName: String, listener: DownloadListener? = null): String {
-        val dir = modelDir
-        if (dir.isEmpty()) throw IllegalStateException("modelDir not set")
-        val path = "$dir/$fileName"
-        val file = File(path)
-        if (file.exists()) {
-            if (file.canRead()) {
-                Log.i(TAG, "Model file already exists and readable: $path (${file.length()} bytes)")
-                return path
-            } else {
-                Log.w(TAG, "Model file exists but not readable, re-downloading: $path")
-                file.delete()
-            }
-        }
-        File(path).parentFile?.mkdirs()
-        val tmpFile = File("$path.tmp")
-        val url = URL(urlStr)
-        val connection = url.openConnection() as HttpURLConnection
-        connection.connectTimeout = 30000
-        connection.readTimeout = 60000
-        connection.connect()
-        val totalBytes = connection.contentLengthLong
-        connection.inputStream.use { input ->
-            FileOutputStream(tmpFile).use { output ->
-                val buffer = ByteArray(8192)
-                var bytesDownloaded: Long = 0
-                var bytesRead: Int
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    output.write(buffer, 0, bytesRead)
-                    bytesDownloaded += bytesRead
-                    listener?.onProgress(fileName, bytesDownloaded, totalBytes)
-                }
-            }
-        }
-        tmpFile.renameTo(File(path))
-        return path
-    }
+    val isMicRecording: Boolean
+        get() = micRecording.get()
+
+    /** 認識言語("ja"/"en"など)。"auto"の場合は自動判定(setLanguageを呼ばない) */
+    var language: String = "ja"
 
     /**
      * Downloads model files for the specified (or current) speech model type.
      * Always downloads Silero VAD model for all modes.
      * If diarizationEnabled is true, also downloads pyannote-audio segmentation and embedding models.
      */
-    fun downloadModel(modelType: SpeechModelType = currentModelType, listener: DownloadListener? = null): Boolean {
+    fun downloadModel(modelType: SpeechModelType = currentModelType, listener: ModelDownloadListener? = null): Boolean {
         currentModelType = modelType
         return try {
             Log.i(TAG, "Starting speech model download/check for ${modelType.displayName}...")
-            downloadFile(
-                modelType.encoderUrl,
-                modelType.encoderFileName,
-                listener
-            )
+            check(ModelDownloader.downloadFile(
+                modelDirectory,
+                ModelFileSpec(modelType.encoderUrl, modelType.encoderFileName),
+                listener,
+            ) != null)
             if (modelType.needsDecoder) {
-                downloadFile(
-                    modelType.decoderUrl,
-                    modelType.decoderFileName,
-                    listener
-                )
+                check(ModelDownloader.downloadFile(
+                    modelDirectory,
+                    ModelFileSpec(modelType.decoderUrl, modelType.decoderFileName),
+                    listener,
+                ) != null)
             }
             // Always download VAD model
             Log.i(TAG, "Downloading VAD model...")
-            downloadFile(VAD_URL, VAD_FILE, listener)
+            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(VAD_URL, VAD_FILE), listener) != null)
             if (diarizationEnabled) {
                 Log.i(TAG, "Downloading diarization models...")
-                downloadFile(DIARIZATION_SEGMENTATION_URL, DIARIZATION_SEGMENTATION_FILE, listener)
-                downloadFile(DIARIZATION_EMBEDDING_URL, DIARIZATION_EMBEDDING_FILE, listener)
+                check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(DIARIZATION_SEGMENTATION_URL, DIARIZATION_SEGMENTATION_FILE), listener) != null)
+                check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(DIARIZATION_EMBEDDING_URL, DIARIZATION_EMBEDDING_FILE), listener) != null)
             }
             listener?.onComplete()
             Log.i(TAG, "Speech model download/check complete for ${modelType.displayName}")
@@ -167,10 +154,9 @@ class AiliaSpeechSample {
         }
 
         return try {
-            val dir = modelDir
-            val encoderPath = "$dir/${currentModelType.encoderFileName}"
+            val encoderPath = File(modelDirectory, currentModelType.encoderFileName).absolutePath
             val decoderPath = if (currentModelType.needsDecoder) {
-                "$dir/${currentModelType.decoderFileName}"
+                File(modelDirectory, currentModelType.decoderFileName).absolutePath
             } else {
                 ""
             }
@@ -179,34 +165,51 @@ class AiliaSpeechSample {
             // Streaming still works without the LIVE flag
             val useLiveFlag = liveMode && !diarizationEnabled
             val flags = if (useLiveFlag) AiliaSpeech.AILIA_SPEECH_FLAG_LIVE else AiliaSpeech.AILIA_SPEECH_FLAG_NONE
+            liveModeEnabled = useLiveFlag
 
             Log.i(TAG, "Initializing speech with envId=$envId, model=${currentModelType.displayName}, liveMode=$liveMode, diarization=$diarizationEnabled, useLiveFlag=$useLiveFlag")
             Log.i(TAG, "Encoder: $encoderPath")
             Log.i(TAG, "Decoder: $decoderPath")
 
-            speech = AiliaSpeech(
+            val engine = AiliaSpeech(
                 envId = envId,
                 task = AiliaSpeech.AILIA_SPEECH_TASK_TRANSCRIBE,
                 flags = flags
             )
-            speech?.openModel(encoderPath, decoderPath, currentModelType.modelTypeId)
+            speech = engine
+            requireSuccess("openModel", engine.openModel(encoderPath, decoderPath, currentModelType.modelTypeId))
+
+            // 言語設定("auto"は自動判定のためsetLanguageを呼ばない。Flutter版と同じ挙動)
+            if (language != "auto") {
+                val langResult = engine.setLanguage(language)
+                Log.i(TAG, "setLanguage($language) result=$langResult")
+                requireSuccess("setLanguage", langResult)
+            }
 
             // Always open VAD (Silero VAD)
-            val vadPath = "$dir/$VAD_FILE"
+            val vadPath = File(modelDirectory, VAD_FILE).absolutePath
             Log.i(TAG, "Opening VAD: $vadPath")
-            val vadResult = speech?.openVad(vadPath, AiliaSpeech.AILIA_SPEECH_VAD_TYPE_SILERO)
+            val vadResult = engine.openVad(vadPath, AiliaSpeech.AILIA_SPEECH_VAD_TYPE_SILERO)
             Log.i(TAG, "VAD openVad result=$vadResult")
+            requireSuccess("openVad", vadResult)
+
+            // VADを有効化するにはsetSilentThresholdの設定が必要
+            // (ailia-models-flutterと同じ閾値: threshold=0.5, speechSec=1.0, noSpeechSec=1.0)
+            val thresholdResult = engine.setSilentThreshold(0.5f, 1.0f, 1.0f)
+            Log.i(TAG, "VAD setSilentThreshold result=$thresholdResult")
+            requireSuccess("setSilentThreshold", thresholdResult)
 
             // Open diarization if enabled
             if (diarizationEnabled) {
-                val segmentationPath = "$dir/$DIARIZATION_SEGMENTATION_FILE"
-                val embeddingPath = "$dir/$DIARIZATION_EMBEDDING_FILE"
+                val segmentationPath = File(modelDirectory, DIARIZATION_SEGMENTATION_FILE).absolutePath
+                val embeddingPath = File(modelDirectory, DIARIZATION_EMBEDDING_FILE).absolutePath
                 Log.i(TAG, "Opening diarization: segmentation=$segmentationPath, embedding=$embeddingPath")
-                val diarResult = speech?.openDiarization(
+                val diarResult = engine.openDiarization(
                     segmentationPath, embeddingPath,
                     AiliaSpeech.AILIA_SPEECH_DIARIZATION_TYPE_PYANNOTE_AUDIO
                 )
                 Log.i(TAG, "Diarization openDiarization result=$diarResult")
+                requireSuccess("openDiarization", diarResult)
             }
 
             isInitialized = true
@@ -221,94 +224,390 @@ class AiliaSpeechSample {
 
     /**
      * Processes audio from a WAV file (non-live mode).
-     * Calls pushInputData, finalizeInputData, transcribe, and returns text.
+     * Calls pushInputData, finalizeInputData, transcribe, and returns transcript lines.
      */
-    fun process(audio: FloatArray, channels: Int, sampleRate: Int): String {
-        Log.i(TAG, "Speech process: audio.size=${audio.size}, channels=$channels, sampleRate=$sampleRate, samples=${audio.size / channels}")
-        val pushResult = speech?.pushInputData(audio, channels, audio.size / channels, sampleRate)
-        Log.i(TAG, "Speech pushInputData result=$pushResult")
-        val finalizeResult = speech?.finalizeInputData()
-        Log.i(TAG, "Speech finalizeInputData result=$finalizeResult")
-        val transcribeResult = speech?.transcribe()
-        Log.i(TAG, "Speech transcribe result=$transcribeResult")
-        if (transcribeResult != null && transcribeResult != 0) {
-            val errorDetail = speech?.getErrorDetail()
-            Log.e(TAG, "Speech transcribe error detail: $errorDetail")
+    fun process(audio: FloatArray, channels: Int, sampleRate: Int): List<String> {
+        return synchronized(speechLock) {
+            val engine = speech ?: error("Speech model not initialized")
+            Log.i(TAG, "Speech process: audio.size=${audio.size}, channels=$channels, sampleRate=$sampleRate, samples=${audio.size / channels}")
+            requireSuccess("pushInputData", engine.pushInputData(audio, channels, audio.size / channels, sampleRate))
+            requireSuccess("finalizeInputData", engine.finalizeInputData())
+            requireSuccess("transcribe", engine.transcribe())
+            val lines = collectTextLines(engine)
+            requireSuccess("resetTranscribeState", engine.resetTranscribeState())
+            lines
         }
-        return collectTextResults()
     }
 
     /**
      * Pushes live audio data for streaming recognition (live mode).
      * Does NOT call finalizeInputData - use finalizeLiveAudio() when recording stops.
+     * Returns transcript lines confirmed by this call.
      */
-    fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int): String {
-        val pushResult = speech?.pushInputData(audio, channels, audio.size / channels, sampleRate)
-        Log.d(TAG, "Speech pushLiveAudio: pushInputData result=$pushResult, samples=${audio.size / channels}")
-        val transcribeResult = speech?.transcribe()
-        Log.d(TAG, "Speech pushLiveAudio: transcribe result=$transcribeResult")
-        if (transcribeResult != null && transcribeResult != 0) {
-            val errorDetail = speech?.getErrorDetail()
-            Log.e(TAG, "Speech pushLiveAudio transcribe error: $errorDetail")
+    fun pushLiveAudio(audio: FloatArray, channels: Int, sampleRate: Int): List<String> {
+        return synchronized(speechLock) {
+            val engine = speech ?: return@synchronized emptyList()
+            requireSuccess("pushInputData", engine.pushInputData(audio, channels, audio.size / channels, sampleRate))
+            val lines = mutableListOf<String>()
+            while (engine.getBuffered() != 0) {
+                requireSuccess("transcribe", engine.transcribe())
+                lines.addAll(collectTextLines(engine))
+            }
+            lines
         }
-        return collectTextResults()
     }
 
     /**
-     * Finalizes live audio input and returns final transcription.
+     * Finalizes live audio input and returns the remaining transcript lines.
      * Call this when mic recording stops.
      */
-    fun finalizeLiveAudio(): String {
-        val finalizeResult = speech?.finalizeInputData()
-        Log.i(TAG, "Speech finalizeLiveAudio: finalizeInputData result=$finalizeResult")
-        val transcribeResult = speech?.transcribe()
-        Log.i(TAG, "Speech finalizeLiveAudio: transcribe result=$transcribeResult")
-        if (transcribeResult != null && transcribeResult != 0) {
-            val errorDetail = speech?.getErrorDetail()
-            Log.e(TAG, "Speech finalizeLiveAudio transcribe error: $errorDetail")
+    fun finalizeLiveAudio(): List<String> {
+        return synchronized(speechLock) {
+            val engine = speech ?: return@synchronized emptyList()
+            requireSuccess("finalizeInputData", engine.finalizeInputData())
+            val lines = mutableListOf<String>()
+            while (engine.getComplete() == 0) {
+                requireSuccess("transcribe", engine.transcribe())
+                lines.addAll(collectTextLines(engine))
+            }
+            requireSuccess("resetTranscribeState", engine.resetTranscribeState())
+            lines
         }
-        return collectTextResults()
     }
 
     /**
-     * Collects text results from the speech engine.
-     * When diarization is enabled, prefixes each line with speaker ID.
+     * 16kHz/monoでマイク録音を開始する。API 23以降はPCM_FLOAT、旧端末はPCM16を使用する。
+     * Flutter版と同様に短いチャンクを逐次投入し、SDKが処理可能になった時だけ認識する。
      */
-    private fun collectTextResults(): String {
-        val count: Int? = speech?.getTextCount()
-        Log.i(TAG, "Speech getTextCount=$count")
-        if (count == null || count == 0) {
-            return ""
+    @SuppressLint("MissingPermission")
+    fun startMicRecording(listener: MicRecordingListener): Boolean {
+        if (!isInitialized) {
+            listener.onError("Speech model not ready")
+            return false
         }
-        val sb = StringBuilder()
+        if (!micSessionActive.compareAndSet(false, true)) {
+            listener.onError("Previous microphone session is still finalizing")
+            return false
+        }
+
+        if (liveModeEnabled) {
+            val callback = object : IntermediateCallback {
+                override fun onIntermediateResult(text: String): Int {
+                    listener.onIntermediateResult(text)
+                    return 0
+                }
+            }
+            val callbackResult = synchronized(speechLock) { speech?.setIntermediateCallback(callback) }
+            Log.i(TAG, "Speech setIntermediateCallback result=$callbackResult")
+            if (callbackResult != 0) {
+                speechIntermediateCallback = null
+                micSessionActive.set(false)
+                listener.onError("Failed to register intermediate result callback: $callbackResult")
+                return false
+            }
+            // Keep a strong reference while the native speech instance owns the callback.
+            speechIntermediateCallback = callback
+        } else {
+            speechIntermediateCallback = null
+        }
+
+        val sampleRate = 16000
+        val readChunkSize = sampleRate / 10
+        val recognitionChunkSize = readChunkSize
+        val useFloatInput = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+        val encoding = if (useFloatInput) AudioFormat.ENCODING_PCM_FLOAT else AudioFormat.ENCODING_PCM_16BIT
+        val bytesPerSample = if (useFloatInput) Float.SIZE_BYTES else Short.SIZE_BYTES
+        val audioRecordBufferBytes = sampleRate * bytesPerSample * 2
+
+        return try {
+            val recorder = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                encoding,
+                audioRecordBufferBytes
+            )
+            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                recorder.release()
+                micSessionActive.set(false)
+                listener.onError("Failed to initialize AudioRecord")
+                return false
+            }
+
+            synchronized(this) {
+                audioRecord = recorder
+            }
+            finalizeMicInput.set(true)
+            micRecognitionExecutor = newMicExecutor("ailia-speech-recognition", android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            micReadExecutor = newMicExecutor("ailia-speech-recording", android.os.Process.THREAD_PRIORITY_AUDIO)
+            recorder.startRecording()
+            micRecording.set(true)
+            micReadExecutor?.execute {
+                runMicRecordingLoop(
+                    recorder,
+                    listener,
+                    sampleRate,
+                    readChunkSize,
+                    recognitionChunkSize,
+                    useFloatInput,
+                )
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start microphone recording", e)
+            releaseAudioRecord()
+            shutdownMicExecutors()
+            micSessionActive.set(false)
+            listener.onError(e.message ?: "Failed to start microphone recording")
+            false
+        }
+    }
+
+    private fun newMicExecutor(name: String, priority: Int): ExecutorService {
+        return Executors.newSingleThreadExecutor { runnable ->
+            Thread({
+                android.os.Process.setThreadPriority(priority)
+                runnable.run()
+            }, name)
+        }
+    }
+
+    private fun runMicRecordingLoop(
+        recorder: AudioRecord,
+        listener: MicRecordingListener,
+        sampleRate: Int,
+        readChunkSize: Int,
+        recognitionChunkSize: Int,
+        useFloatInput: Boolean,
+    ) {
+        val readBuffer = FloatArray(readChunkSize)
+        val shortReadBuffer = if (useFloatInput) null else ShortArray(readChunkSize)
+        val recognitionBuffer = FloatArray(recognitionChunkSize)
+        var recognitionFill = 0
+
+        try {
+            while (micRecording.get()) {
+                val readResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && useFloatInput) {
+                    recorder.read(readBuffer, 0, readBuffer.size, AudioRecord.READ_BLOCKING)
+                } else {
+                    @Suppress("DEPRECATION")
+                    val count = recorder.read(shortReadBuffer!!, 0, shortReadBuffer.size)
+                    if (count > 0) {
+                        for (i in 0 until count) readBuffer[i] = shortReadBuffer[i] / 32768.0f
+                    }
+                    count
+                }
+                if (readResult < 0) {
+                    micRecording.set(false)
+                    listener.onError("AudioRecord read failed: $readResult")
+                    break
+                }
+                if (readResult == 0) {
+                    continue
+                }
+
+                listener.onWaveform(readBuffer.copyOf(readResult), sampleRate)
+
+                var sourceOffset = 0
+                while (sourceOffset < readResult) {
+                    val copySize = minOf(
+                        readResult - sourceOffset,
+                        recognitionChunkSize - recognitionFill
+                    )
+                    System.arraycopy(
+                        readBuffer,
+                        sourceOffset,
+                        recognitionBuffer,
+                        recognitionFill,
+                        copySize
+                    )
+                    sourceOffset += copySize
+                    recognitionFill += copySize
+
+                    if (recognitionFill == recognitionChunkSize) {
+                        submitMicChunk(recognitionBuffer.copyOf(), listener, sampleRate)
+                        recognitionFill = 0
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            if (micRecording.get()) {
+                Log.e(TAG, "Microphone recording loop failed", e)
+                listener.onError(e.message ?: "Microphone recording failed")
+            }
+        } finally {
+            micRecording.set(false)
+            releaseAudioRecord(recorder)
+            micReadExecutor?.shutdown()
+            micReadExecutor = null
+
+            if (finalizeMicInput.get()) {
+                submitMicFinalization(
+                    recognitionBuffer.copyOf(recognitionFill),
+                    listener,
+                    sampleRate
+                )
+            } else {
+                micRecognitionExecutor?.shutdownNow()
+                micRecognitionExecutor = null
+                micSessionActive.set(false)
+            }
+        }
+    }
+
+    private fun submitMicChunk(
+        chunk: FloatArray,
+        listener: MicRecordingListener,
+        sampleRate: Int
+    ) {
+        micRecognitionExecutor?.execute {
+            if (!isInitialized) return@execute
+            try {
+                val lines = pushLiveAudio(chunk, 1, sampleRate)
+                if (lines.isNotEmpty()) {
+                    listener.onResult(lines, false)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "pushLiveAudio failed", e)
+                listener.onError(e.message ?: "Live speech recognition failed")
+            }
+        }
+    }
+
+    private fun submitMicFinalization(
+        tail: FloatArray,
+        listener: MicRecordingListener,
+        sampleRate: Int
+    ) {
+        val executor = micRecognitionExecutor
+        if (executor == null) {
+            micSessionActive.set(false)
+            return
+        }
+        executor.execute {
+            try {
+                if (isInitialized && tail.isNotEmpty()) {
+                    val lines = pushLiveAudio(tail, 1, sampleRate)
+                    if (lines.isNotEmpty()) {
+                        listener.onResult(lines, false)
+                    }
+                }
+                val finalLines = if (isInitialized) finalizeLiveAudio() else emptyList()
+                listener.onResult(finalLines, true)
+            } catch (e: Exception) {
+                Log.e(TAG, "finalizeLiveAudio failed", e)
+                listener.onError(e.message ?: "Failed to finalize live speech recognition")
+            } finally {
+                micSessionActive.set(false)
+                synchronized(this) {
+                    if (micRecognitionExecutor === executor) {
+                        micRecognitionExecutor = null
+                    }
+                }
+            }
+        }
+        executor.shutdown()
+    }
+
+    /** 録音を停止する。通常停止時は1秒未満の末尾も投入して認識を確定する。 */
+    fun stopMicRecording(finalize: Boolean = true) {
+        if (!micSessionActive.get()) return
+        finalizeMicInput.set(finalize)
+        micRecording.set(false)
+        releaseAudioRecord()
+    }
+
+    private fun releaseAudioRecord(expected: AudioRecord? = null) {
+        val recorder = synchronized(this) {
+            if (expected != null && audioRecord !== expected) {
+                null
+            } else {
+                val current = audioRecord
+                audioRecord = null
+                current
+            }
+        } ?: return
+        try {
+            if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                recorder.stop()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop AudioRecord: ${e.message}")
+        }
+        try {
+            recorder.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release AudioRecord: ${e.message}")
+        }
+    }
+
+    private fun shutdownMicExecutors() {
+        micReadExecutor?.shutdownNow()
+        micReadExecutor = null
+        micRecognitionExecutor?.shutdownNow()
+        micRecognitionExecutor = null
+    }
+
+    private fun formatTimeStamp(sec: Float): String {
+        val total = sec.toInt()
+        return String.format(Locale.ROOT, "%02d:%02d", total / 60, total % 60)
+    }
+
+    /**
+     * Collects transcript lines from the speech engine in the
+     * meeting-minutes format used by ailia-models-flutter:
+     * "[mm:ss - mm:ss] text". When diarization is enabled, each line
+     * is prefixed with the speaker ID.
+     */
+    private fun collectTextLines(engine: AiliaSpeech): List<String> {
+        val count = engine.getTextCount()
+        Log.i(TAG, "Speech getTextCount=$count")
+        if (count == 0) {
+            return emptyList()
+        }
+        val lines = mutableListOf<String>()
         for (i in 0 until count) {
-            val text: AiliaSpeechText? = speech?.getText(i)
+            val text: AiliaSpeechText? = engine.getText(i)
             if (text == null) {
                 continue
             }
+            val stamp = "[${formatTimeStamp(text.timeStampBegin)} - ${formatTimeStamp(text.timeStampEnd)}]"
             if (diarizationEnabled && text.speakerId.toLong() and 0xFFFFFFFFL != AiliaSpeech.AILIA_SPEECH_SPEAKER_ID_UNKNOWN.toLong() and 0xFFFFFFFFL) {
                 Log.i(TAG, "Speech text[$i]: speaker=#${text.speakerId} '${text.text}' confidence=${text.confidence}")
-                sb.append("[Speaker ${text.speakerId}] ${text.text}\n")
+                lines.add("$stamp [Speaker ${text.speakerId}] ${text.text}")
             } else {
                 Log.i(TAG, "Speech text[$i]: '${text.text}' confidence=${text.confidence}")
-                sb.append(text.text).append("\n")
+                lines.add("$stamp ${text.text}")
             }
         }
-        speech?.resetTranscribeState()
-        val result = sb.toString()
-        Log.i(TAG, "Speech result: '$result'")
-        return result
+        Log.i(TAG, "Speech result lines: $lines")
+        return lines
     }
 
     fun releaseSpeech() {
-        try {
-            speech?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing speech: ${e.javaClass.name}: ${e.message}")
-        } finally {
-            speech = null
-            isInitialized = false
-            Log.i(TAG, "Speech released")
+        isInitialized = false
+        stopMicRecording(finalize = false)
+        shutdownMicExecutors()
+        micSessionActive.set(false)
+        synchronized(speechLock) {
+            try {
+                speech?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error releasing speech: ${e.javaClass.name}: ${e.message}")
+            } finally {
+                speech = null
+                speechIntermediateCallback = null
+                liveModeEnabled = false
+                isInitialized = false
+                Log.i(TAG, "Speech released")
+            }
+        }
+    }
+
+    private fun requireSuccess(operation: String, status: Int) {
+        if (status != 0) {
+            val detail = speech?.getErrorDetail().orEmpty()
+            throw IllegalStateException("$operation failed: status=$status $detail".trim())
         }
     }
 }

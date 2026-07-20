@@ -30,15 +30,14 @@ class MiniLMv2InstrumentedTest {
     fun setup() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         modelDir = context.filesDir.absolutePath
-        miniLMv2Sample = AiliaMiniLMv2Sample()
-        miniLMv2Sample.modelDir = modelDir
+        miniLMv2Sample = AiliaMiniLMv2Sample(File(modelDir))
     }
 
     @Test
     fun testDownloadModel() {
         Log.i(TAG, "=== Testing MiniLMv2 model download ===")
 
-        val downloaded = miniLMv2Sample.downloadModel(object : AiliaMiniLMv2Sample.DownloadListener {
+        val downloaded = miniLMv2Sample.downloadModel(object : ModelDownloadListener {
             override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                 val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
                 Log.i(TAG, "Downloading $fileName: $percent%")

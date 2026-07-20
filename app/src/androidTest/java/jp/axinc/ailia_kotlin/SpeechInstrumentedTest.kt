@@ -26,8 +26,7 @@ class SpeechInstrumentedTest {
     fun setup() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         modelDir = context.filesDir.absolutePath
-        speechSample = AiliaSpeechSample()
-        speechSample.modelDir = modelDir
+        speechSample = AiliaSpeechSample(File(modelDir))
     }
 
     private fun loadDemoAudio(): AudioUtil.WavFileData {
@@ -41,7 +40,7 @@ class SpeechInstrumentedTest {
         Log.i(TAG, "=== Testing ${modelType.displayName} download and init ===")
 
         // Download
-        val downloaded = speechSample.downloadModel(modelType, object : AiliaSpeechSample.DownloadListener {
+        val downloaded = speechSample.downloadModel(modelType, object : ModelDownloadListener {
             override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                 val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
                 Log.i(TAG, "Downloading $fileName: $percent%")
@@ -180,7 +179,7 @@ class SpeechInstrumentedTest {
         Log.i(TAG, "=== Testing diarization download and init with Whisper Tiny ===")
 
         speechSample.diarizationEnabled = true
-        val downloaded = speechSample.downloadModel(SpeechModelType.WHISPER_TINY, object : AiliaSpeechSample.DownloadListener {
+        val downloaded = speechSample.downloadModel(SpeechModelType.WHISPER_TINY, object : ModelDownloadListener {
             override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                 val percent = if (totalBytes > 0) (bytesDownloaded * 100 / totalBytes) else 0
                 Log.i(TAG, "Downloading $fileName: $percent%")
@@ -247,7 +246,7 @@ class SpeechInstrumentedTest {
         val audio = loadDemoAudio()
         val chunkSize = audio.sampleRate // 1 second chunks
         var offset = 0
-        var lastResult = ""
+        var lastResult = emptyList<String>()
 
         while (offset < audio.audioData.size) {
             val end = minOf(offset + chunkSize, audio.audioData.size)

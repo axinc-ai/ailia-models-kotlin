@@ -6,6 +6,7 @@ import android.graphics.Paint
 import android.graphics.PointF
 import android.util.Log
 import axip.ailia_tracker.*
+import java.util.Locale
 
 class AiliaTrackerSample {
     companion object {
@@ -44,6 +45,7 @@ class AiliaTrackerSample {
         } finally {
             tracker = null
             isInitialized = false
+            lastTrackingResult = ""
             trajectoryPoints.clear()
             Log.i(TAG, "Tracker released")
         }
@@ -85,7 +87,7 @@ class AiliaTrackerSample {
                     val obj = tracker!!.getObject(i)
                     obj?.let {
                         Log.d(TAG, "Object $i: id=${it.id}, category=${it.category}, prob=${it.prob}, x=${it.x}, y=${it.y}, w=${it.w}, h=${it.h}")
-                        trackingInfo += "\nID:${it.id} Cat:${it.category} Conf:${String.format("%.2f", it.prob)}"
+                        trackingInfo += "\nID:${it.id} Cat:${it.category} Conf:${String.format(Locale.ROOT, "%.2f", it.prob)}"
                         
                         // Calculate center point of bounding box
                         val centerX = w * (it.x + it.w / 2)
@@ -103,6 +105,10 @@ class AiliaTrackerSample {
                         
                         // Generate color based on ID
                         val trajectoryColor = generateColorForId(it.id)
+                        val left = (w * it.x).coerceIn(0f, w.toFloat())
+                        val top = (h * it.y).coerceIn(0f, h.toFloat())
+                        val right = (w * (it.x + it.w)).coerceIn(0f, w.toFloat())
+                        val bottom = (h * (it.y + it.h)).coerceIn(0f, h.toFloat())
                         
                         // Draw trajectory lines
                         if (trajectoryList.size > 1) {
@@ -125,21 +131,57 @@ class AiliaTrackerSample {
                         }
                         
                         // Draw bounding box
+                        val boxPaint = Paint(paint).apply {
+                            color = trajectoryColor
+                            style = Paint.Style.STROKE
+                            strokeWidth = maxOf(paint.strokeWidth, 5f)
+                            isAntiAlias = true
+                        }
                         canvas.drawRect(
-                            (w * it.x).toFloat(),
-                            (h * it.y).toFloat(),
-                            (w * (it.x + it.w)).toFloat(),
-                            (h * (it.y + it.h)).toFloat(),
-                            paint
+                            left,
+                            top,
+                            right,
+                            bottom,
+                            boxPaint
                         )
                         
-                        // Draw tracking ID
+                        // Draw tracking ID on the same high-visibility color as the box.
+                        val label = "ID:${it.id}"
                         val textPaint = Paint().apply {
-                            color = android.graphics.Color.WHITE
+                            color = Color.WHITE
                             textSize = 24f
                             isAntiAlias = true
                         }
-                        canvas.drawText("ID:${it.id}", (w * it.x).toFloat(), (h * it.y).toFloat() - 5, textPaint)
+                        val labelPadding = 6f
+                        // BBoxにもtop/bottomというローカル変数があるため、FontMetricsを
+                        // 明示的に参照する。暗黙参照ではBBoxの高さがラベル高として使われ、
+                        // 背景がBBoxの下端まで伸びてしまう。
+                        val fontMetrics = textPaint.fontMetrics
+                        val labelHeight = fontMetrics.bottom - fontMetrics.top
+                        val labelTop = if (top >= labelHeight + labelPadding * 2) {
+                            top - labelHeight - labelPadding * 2
+                        } else {
+                            top
+                        }
+                        val labelRight = (left + textPaint.measureText(label) + labelPadding * 2)
+                            .coerceAtMost(w.toFloat())
+                        val labelPaint = Paint().apply {
+                            color = trajectoryColor
+                            style = Paint.Style.FILL
+                        }
+                        canvas.drawRect(
+                            left,
+                            labelTop,
+                            labelRight,
+                            labelTop + labelHeight + labelPadding * 2,
+                            labelPaint
+                        )
+                        canvas.drawText(
+                            label,
+                            left + labelPadding,
+                            labelTop + labelPadding - fontMetrics.top,
+                            textPaint
+                        )
                     }
                 }
                 lastTrackingResult = trackingInfo
@@ -170,13 +212,4 @@ class AiliaTrackerSample {
         return Color.HSVToColor(floatArrayOf(hue, saturation, value))
     }
     
-    data class DetectionResult(
-        val category: Int,
-        val confidence: Float,
-        val x: Float,
-        val y: Float,
-        val width: Float,
-        val height: Float
-    )
-
 }

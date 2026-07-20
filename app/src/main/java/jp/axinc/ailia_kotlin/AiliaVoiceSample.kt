@@ -11,75 +11,65 @@ import axip.ailia_voice.AiliaVoice.Companion.AILIA_VOICE_G2P_TYPE_GPT_SOVITS_JA
 import axip.ailia_voice.AiliaVoice.Companion.AILIA_VOICE_G2P_TYPE_GPT_SOVITS_ZH
 
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Build
 import kotlin.math.roundToInt
 
-enum class VoiceModelType {
-    GPT_SOVITS_V1,
-    GPT_SOVITS_V2,
-    GPT_SOVITS_V3,
-    GPT_SOVITS_V2_PRO,
+enum class VoiceModelType(val displayName: String, val defaultText: String) {
+    // V1は英語モデルのためデフォルトは英文
+    GPT_SOVITS_V1("GPT-SoVITS V1", "Hello world. We will introduce ailia AI voice."),
+    GPT_SOVITS_V2("GPT-SoVITS V2", "こんにちは。今日はいい天気ですね。"),
+    GPT_SOVITS_V3("GPT-SoVITS V3", "こんにちは。今日はいい天気ですね。"),
+    GPT_SOVITS_V2_PRO("GPT-SoVITS V2-Pro", "こんにちは。今日はいい天気ですね。"),
+    GPT_SOVITS_V2_PRO_DISTILL_JA("GPT-SoVITS V2-Pro Distill JA", "こんにちは。今日はいい天気ですね。"),
 }
 
-class AiliaVoiceSample {
+class AiliaVoiceSample(private val modelDirectory: File) {
     companion object {
         private const val TAG = "AILIA_Main"
-        private var voice: AiliaVoice? = null
-        private var isInitialized = false
-    }
 
-    interface DownloadListener {
-        fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long)
-        fun onComplete()
-        fun onError(error: String)
-    }
-
-    var modelType: VoiceModelType = VoiceModelType.GPT_SOVITS_V1
-    var modelDir: String = ""
-    private var downloadListener: DownloadListener? = null
-
-    private fun download(link: String, name: String): String {
-        val dir: String = modelDir
-        val path: String = "$dir/$name"
-        try {
-            if (File(path).exists()) {
-                return path
-            }
-            File(path).parentFile?.mkdirs()
-            val tmpFile = File("$path.tmp")
-            val url = URL(link)
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 30000
-            connection.readTimeout = 60000
-            connection.connect()
-            val totalBytes = connection.contentLengthLong
-            connection.inputStream.use { input ->
-                FileOutputStream(tmpFile).use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesDownloaded: Long = 0
-                    var bytesRead: Int
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        bytesDownloaded += bytesRead
-                        downloadListener?.onProgress(name, bytesDownloaded, totalBytes)
-                    }
+        /**
+         * 入力テキストが日本語か英語かを判定してG2Pの言語("ja"/"en")を返す。
+         * ひらがな/カタカナ/漢字が含まれていれば日本語と判定する。
+         */
+        fun detectLanguage(text: String): String {
+            for (ch in text) {
+                val block = Character.UnicodeBlock.of(ch)
+                if (block == Character.UnicodeBlock.HIRAGANA ||
+                    block == Character.UnicodeBlock.KATAKANA ||
+                    block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS) {
+                    return "ja"
                 }
             }
-            tmpFile.renameTo(File(path))
-        } catch (e: Exception) {
-            Log.e("AILIA_Main", "Model Download Failed: $name", e)
-            return ""
+            return "en"
         }
-        return path
+    }
+
+    private var voice: AiliaVoice? = null
+    private var isInitialized = false
+    private var audioTrack: AudioTrack? = null
+    var modelType: VoiceModelType = VoiceModelType.GPT_SOVITS_V1
+    private var downloadListener: ModelDownloadListener? = null
+
+    // 直近の合成結果(波形表示用)
+    var lastAudioData: FloatArray? = null
+        private set
+    var lastAudioChannels: Int = 1
+        private set
+    var lastAudioSampleRate: Int = 0
+        private set
+
+    private fun download(link: String, name: String): String {
+        val file = ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(link, name), downloadListener)
+            ?: error("Model download failed: $name")
+        return file.absolutePath
     }
 
     private fun downloadFiles(baseUrl: String, prefix: String, files: List<String>) {
@@ -176,7 +166,21 @@ class AiliaVoiceSample {
         )
     }
 
-    fun initializeVoice(envId: Int = -1, listener: DownloadListener? = null): Boolean {
+    private fun downloadModelV2ProDistill() {
+        downloadFiles(
+            "https://storage.googleapis.com/ailia-models/gpt-sovits-v2-pro-distill",
+            "gpt-sovits-v2-pro-distill/",
+            listOf("t2s_encoder_distill_small.onnx", "t2s_fsdec_distill_small.onnx",
+                   "t2s_sdec_distill_small.opt.onnx")
+        )
+        downloadFiles(
+            "https://storage.googleapis.com/ailia-models/gpt-sovits-v2-pro",
+            "gpt-sovits-v2-pro/",
+            listOf("cnhubert.onnx", "vits.onnx", "sv.onnx")
+        )
+    }
+
+    fun initializeVoice(envId: Int = -1, listener: ModelDownloadListener? = null): Boolean {
         this.downloadListener = listener
         return try {
             Log.i(TAG, "Begin model download for $modelType")
@@ -192,6 +196,7 @@ class AiliaVoiceSample {
                 VoiceModelType.GPT_SOVITS_V2 -> downloadModelV2()
                 VoiceModelType.GPT_SOVITS_V3 -> downloadModelV3()
                 VoiceModelType.GPT_SOVITS_V2_PRO -> downloadModelV2Pro()
+                VoiceModelType.GPT_SOVITS_V2_PRO_DISTILL_JA -> downloadModelV2ProDistill()
             }
 
             Log.i(TAG, "End model download")
@@ -203,7 +208,7 @@ class AiliaVoiceSample {
             Log.i(TAG, "Initializing voice with envId=$envId")
             voice = AiliaVoice(envId = envId)
 
-            val dir: String = modelDir
+            val dir = modelDirectory.absolutePath
             voice?.setUserDictionaryFile(path = "${dir}/user.dict", AILIA_VOICE_DICTIONARY_TYPE_OPEN_JTALK)
             voice?.openDictionaryFile(path = dir, dictionaryType = AILIA_VOICE_DICTIONARY_TYPE_OPEN_JTALK)
             voice?.openDictionaryFile(path = dir, dictionaryType = AILIA_VOICE_DICTIONARY_TYPE_G2P_EN)
@@ -260,6 +265,20 @@ class AiliaVoiceSample {
                         vocab = "${v2pro}/vocab.txt"
                     )
                 }
+                VoiceModelType.GPT_SOVITS_V2_PRO_DISTILL_JA -> {
+                    val distill = "${dir}/gpt-sovits-v2-pro-distill"
+                    val v2pro = "${dir}/gpt-sovits-v2-pro"
+                    voice?.openGPTSoVITSV2ProModelFile(
+                        encoder = "${distill}/t2s_encoder_distill_small.onnx",
+                        decoder1 = "${distill}/t2s_fsdec_distill_small.onnx",
+                        decoder2 = "${distill}/t2s_sdec_distill_small.opt.onnx",
+                        ssl = "${v2pro}/cnhubert.onnx",
+                        vits = "${v2pro}/vits.onnx",
+                        sv = "${v2pro}/sv.onnx",
+                        chineseBert = null,
+                        vocab = null
+                    )
+                }
             }
 
             isInitialized = true
@@ -277,6 +296,7 @@ class AiliaVoiceSample {
     }
 
     fun releaseVoice() {
+        releaseAudioTrack()
         try {
             voice?.close()
         } catch (e: Exception) {
@@ -309,7 +329,8 @@ class AiliaVoiceSample {
             Log.d(TAG, "Ref Features: $refG2pText")
             voice?.setReferenceAudio(audio, audio.size * 4, channels, sampleRate, refG2pText)
 
-            val g2pText = voice?.g2p(text, g2pTypeForLang(textLang))!!
+            val targetLanguage = if (modelType == VoiceModelType.GPT_SOVITS_V2_PRO_DISTILL_JA) "ja" else textLang
+            val g2pText = voice?.g2p(text, g2pTypeForLang(targetLanguage))!!
             Log.d(TAG, "Text: $text")
             Log.d(TAG, "Features: $g2pText")
 
@@ -318,16 +339,20 @@ class AiliaVoiceSample {
             val inferenceResult: AiliaVoice.AudioData = voice?.synthesizeVoice(g2pText)!!
             val endTime = System.nanoTime()
             Log.d(TAG, "Inference result samples ${inferenceResult.data.size} channels ${inferenceResult.channels} sampleRate ${inferenceResult.samplingRate}")
+            lastAudioData = inferenceResult.data
+            lastAudioChannels = inferenceResult.channels
+            lastAudioSampleRate = inferenceResult.samplingRate
             playAudio(inferenceResult.data, inferenceResult.channels, inferenceResult.samplingRate)
             return (endTime - startTime) / 1000000
         } catch (e: Exception) {
             Log.e(TAG, "Exception during sample execution", e)
         }
-        return 0
+        return -1
     }
 
     fun playAudio(waveBuffer: FloatArray, channels: Int, samplingRate: Int) {
         try {
+            releaseAudioTrack()
             val channelConfig = if (channels == 1)
                 AudioFormat.CHANNEL_OUT_MONO
             else
@@ -344,40 +369,70 @@ class AiliaVoiceSample {
             )
             val bufferSize = maxOf(minBuffer, pcm16.size * 2)
 
-            val audioTrack = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
+            val track = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(samplingRate)
+                            .setChannelMask(channelConfig)
+                            .build()
+                    )
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .setBufferSizeInBytes(bufferSize)
+                    .build()
+            } else {
+                @Suppress("DEPRECATION")
+                AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    samplingRate,
+                    channelConfig,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize,
+                    AudioTrack.MODE_STATIC,
                 )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(samplingRate)
-                        .setChannelMask(channelConfig)
-                        .build()
-                )
-                .setTransferMode(AudioTrack.MODE_STATIC)
-                .setBufferSizeInBytes(bufferSize)
-                .build()
+            }
+            audioTrack = track
 
-            val written = audioTrack.write(pcm16, 0, pcm16.size)
+            val written = track.write(pcm16, 0, pcm16.size)
             Log.d(TAG, "Wrote $written samples")
-            audioTrack.setVolume(1.0f)
-            audioTrack.setNotificationMarkerPosition(pcm16.size)
-            audioTrack.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
-                override fun onMarkerReached(track: AudioTrack?) {
+            check(written == pcm16.size) { "AudioTrack write failed: $written/${pcm16.size}" }
+            track.setVolume(1.0f)
+            track.setNotificationMarkerPosition(pcm16.size / channels.coerceAtLeast(1))
+            track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+                override fun onMarkerReached(completedTrack: AudioTrack?) {
                     Log.d(TAG, "Track Finish")
-                    track?.stop()
-                    track?.release()
+                    if (audioTrack === completedTrack) releaseAudioTrack()
                 }
 
-                override fun onPeriodicNotification(track: AudioTrack?) {}
+                override fun onPeriodicNotification(completedTrack: AudioTrack?) {}
             })
-            audioTrack.play()
+            track.play()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to play wave: ${e.message}", e)
+            releaseAudioTrack()
+        }
+    }
+
+    @Synchronized
+    private fun releaseAudioTrack() {
+        val track = audioTrack ?: return
+        audioTrack = null
+        try {
+            if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop AudioTrack: ${e.message}")
+        }
+        try {
+            track.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release AudioTrack: ${e.message}")
         }
     }
 }

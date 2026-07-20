@@ -9,6 +9,7 @@ import axip.ailia_llm.AiliaLLMMediaData
 import axip.ailia_llm.AiliaLLMMultimodalChatMessage
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Sample class demonstrating ailia Multimodal LLM inference for image understanding.
@@ -21,10 +22,12 @@ class AiliaMultimodalLLMSample {
     private var projectorPath: String? = null
     private var sampleImagePath: String? = null
     private val conversationHistory = mutableListOf<AiliaLLMMultimodalChatMessage>()
+    private val cancelRequested = AtomicBoolean(false)
 
     companion object {
         private const val TAG = "AiliaMultimodalLLM"
         private const val N_CTX = 8192 // Context window size
+        private const val MAX_GENERATION_STEPS = 4096
     }
 
     interface MultimodalLLMListener {
@@ -170,7 +173,9 @@ class AiliaMultimodalLLMSample {
             return -1
         }
 
+        val historySizeBeforeRequest = conversationHistory.size
         return try {
+            cancelRequested.set(false)
             val startTime = System.nanoTime()
 
             // Create media data for the image
@@ -196,10 +201,12 @@ class AiliaMultimodalLLMSample {
             val responseBuilder = StringBuilder()
             var done = false
             var tokenCount = 0
+            var generationSteps = 0
 
             Log.i(TAG, "chatWithImage: starting generate loop...")
-            while (!done) {
+            while (!done && !cancelRequested.get() && generationSteps < MAX_GENERATION_STEPS) {
                 done = llm!!.generate()
+                generationSteps++
                 val token = llm!!.getDeltaText()
                 if (token.isNotEmpty()) {
                     tokenCount++
@@ -209,6 +216,16 @@ class AiliaMultimodalLLMSample {
                         Log.i(TAG, "chatWithImage: token[$tokenCount]='$token'")
                     }
                 }
+            }
+            if (cancelRequested.get()) {
+                while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
+                listener?.onError("Generation cancelled")
+                return -1
+            }
+            if (!done) {
+                while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
+                listener?.onError("Generation stopped after $MAX_GENERATION_STEPS steps")
+                return -1
             }
             Log.i(TAG, "chatWithImage: generate loop done, total tokens=$tokenCount")
 
@@ -227,10 +244,16 @@ class AiliaMultimodalLLMSample {
             processingTime
 
         } catch (e: Exception) {
+            while (conversationHistory.size > historySizeBeforeRequest) conversationHistory.removeAt(conversationHistory.lastIndex)
             Log.e(TAG, "Failed to generate response: ${e.message}", e)
             listener?.onError("Failed to generate: ${e.message}")
             -1
         }
+    }
+
+    /** Requests the blocking generation loop to stop at the next token boundary. */
+    fun cancelGeneration() {
+        cancelRequested.set(true)
     }
 
     /**
@@ -260,6 +283,7 @@ class AiliaMultimodalLLMSample {
      * Releases the LLM resources.
      */
     fun release() {
+        cancelGeneration()
         try {
             llm?.destroy()
         } catch (e: Exception) {

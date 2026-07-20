@@ -56,7 +56,7 @@ dependencies {
     implementation project(':ailia-voice-jni')
     implementation project(':ailia-llm-jni')
     implementation 'com.qualcomm.qti:qnn-runtime:2.47.0'
-    testImplementation 'junit:junit:4.+'
+    testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.3.0'
 }
