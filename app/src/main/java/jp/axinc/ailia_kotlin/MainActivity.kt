@@ -39,6 +39,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var algorithmSpinner: Spinner
     private lateinit var envSpinner: Spinner
     private lateinit var processingTimeTextView: TextView
+    private lateinit var modelDownloadProgressTextView: TextView
     private lateinit var modelDownloadProgressBar: ProgressBar
     private lateinit var resultScrollView: FrameLayout
     private lateinit var classificationResultTextView: TextView
@@ -275,6 +276,7 @@ class MainActivity : AppCompatActivity() {
         algorithmSpinner = findViewById(R.id.algorithmSpinner)
         envSpinner = findViewById(R.id.envSpinner)
         processingTimeTextView = findViewById(R.id.processingTimeTextView)
+        modelDownloadProgressTextView = findViewById(R.id.modelDownloadProgressTextView)
         modelDownloadProgressBar = findViewById(R.id.modelDownloadProgressBar)
         resultScrollView = findViewById(R.id.resultScrollView)
         classificationResultTextView = findViewById(R.id.classificationResultTextView)
@@ -880,14 +882,14 @@ class MainActivity : AppCompatActivity() {
                     val time = onnxClassificationSample.processClassification(img, w, h)
                     val result = onnxClassificationSample.getLastClassificationResult()
                     runOnUiThreadIfActive {
-                        classificationResultTextView.text = "Classification Result: $result"
+                        classificationResultTextView.text = "Classification Result:\n$result"
                     }
                     time
                 } else {
                     val time = classificationSample.processClassification(bitmap)
                     val result = classificationSample.getLastClassificationResult()
                     runOnUiThreadIfActive {
-                        classificationResultTextView.text = "Classification Result: $result"
+                        classificationResultTextView.text = "Classification Result:\n$result"
                     }
                     time
                 }
@@ -1022,6 +1024,10 @@ class MainActivity : AppCompatActivity() {
         if (isCameraMode) {
             visionViews.add(cameraPreviewView)
         }
+        val classificationViews = visionViews + setOf<View>(
+            resultScrollView,
+            classificationResultTextView,
+        )
 
         val tokenizeViews = setOf<View>(
             resultScrollView,
@@ -1114,7 +1120,7 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.OBJECT_DETECTION to visionViews,
             AlgorithmType.TRACKING to visionViews,
             AlgorithmType.TOKENIZE to tokenizeViews,
-            AlgorithmType.CLASSIFICATION to visionViews,
+            AlgorithmType.CLASSIFICATION to classificationViews,
             AlgorithmType.BACKGROUND_REMOVAL to visionViews,
             AlgorithmType.SPEECH_TO_TEXT to speechViews,
             AlgorithmType.TEXT_TO_SPEECH to voiceViews,
@@ -1590,6 +1596,8 @@ class MainActivity : AppCompatActivity() {
 
     /** モデルダウンロードの進捗を画面下部の共通ProgressBarへ表示する。 */
     private fun showModelDownloadProgress(bytesDownloaded: Long = 0, totalBytes: Long = 0) {
+        modelDownloadProgressTextView.text = formatDownloadProgress(bytesDownloaded, totalBytes)
+        modelDownloadProgressTextView.visibility = View.VISIBLE
         modelDownloadProgressBar.visibility = View.VISIBLE
         if (totalBytes > 0) {
             modelDownloadProgressBar.isIndeterminate = false
@@ -1601,6 +1609,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun hideModelDownloadProgress() {
+        modelDownloadProgressTextView.text = ""
+        modelDownloadProgressTextView.visibility = View.GONE
         modelDownloadProgressBar.visibility = View.GONE
         modelDownloadProgressBar.isIndeterminate = false
         modelDownloadProgressBar.progress = 0
@@ -3502,10 +3512,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 var timeText = "Processing Time: ${processingTime}ms"
                 when (currentAlgorithm) {
-                    AlgorithmType.CLASSIFICATION -> {
-                        val result = if (selectedRuntime == "ONNX") onnxClassificationSample.getLastClassificationResult() else classificationSample.getLastClassificationResult()
-                        timeText += "\n$result"
-                    }
                     AlgorithmType.TRACKING -> {
                         timeText += "\n${trackerSample.getLastTrackingResult()}"
                     }
@@ -3668,10 +3674,6 @@ class MainActivity : AppCompatActivity() {
                     val fps = if (processingTime > 0) 1000 / processingTime else 0
                     var timeText = "Processing Time: ${processingTime}ms - FPS: $fps"
                     when (currentAlgorithm) {
-                        AlgorithmType.CLASSIFICATION -> {
-                            val result = if (selectedRuntime == "ONNX") onnxClassificationSample.getLastClassificationResult() else classificationSample.getLastClassificationResult()
-                            timeText += "\n$result"
-                        }
                         AlgorithmType.TRACKING -> {
                             timeText += "\n${trackerSample.getLastTrackingResult()}"
                         }
@@ -3785,5 +3787,16 @@ class MainActivity : AppCompatActivity() {
     fun loadRawFile(resourceId: Int): ByteArray? {
         val resources = this.resources
         resources.openRawResource(resourceId).use { `in` -> return inputStreamToByteArray(`in`) }
+    }
+}
+
+internal fun formatDownloadProgress(bytesDownloaded: Long, totalBytes: Long): String {
+    val bytesPerMegabyte = 1024.0 * 1024.0
+    val downloadedMb = bytesDownloaded.coerceAtLeast(0) / bytesPerMegabyte
+    return if (totalBytes > 0) {
+        val totalMb = totalBytes / bytesPerMegabyte
+        String.format(Locale.ROOT, "Downloading %.1f / %.1f MB", downloadedMb, totalMb)
+    } else {
+        String.format(Locale.ROOT, "Downloading %.1f MB", downloadedMb)
     }
 }
