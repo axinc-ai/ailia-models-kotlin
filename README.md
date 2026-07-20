@@ -28,7 +28,7 @@ Models bundled in `res/raw` run without a download. Other models are downloaded 
 | Pose Estimation | [Lightweight Human Pose Estimation](app/src/main/java/jp/axinc/ailia_kotlin/AiliaPoseEstimatorSample.kt) | ailia SDK |
 | Object Detection | [YOLOX TFLite](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTFLiteObjectDetectionSample.kt), [YOLOX ONNX](app/src/main/java/jp/axinc/ailia_kotlin/AiliaOnnxObjectDetectionSample.kt), [DETR ResNet50](app/src/main/java/jp/axinc/ailia_kotlin/AiliaDetrSample.kt) | ailia TFLite Runtime / ailia SDK |
 | Object Tracking | [ByteTrack](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTrackerSample.kt) with YOLOX | ailia Tracker + detector runtime |
-| Image Classification | [MobileNetV2 / ResNet50 TFLite](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTFLiteClassificationSample.kt), [MobileNetV2 / ResNet50 ONNX](app/src/main/java/jp/axinc/ailia_kotlin/AiliaOnnxClassificationSample.kt) | ailia TFLite Runtime / ailia SDK |
+| Image Classification | [MobileNetV2 / ResNet50 TFLite](app/src/main/java/jp/axinc/ailia_kotlin/AiliaTFLiteClassificationSample.kt), [MobileNetV2 / ResNet50 / ViT-B/16 ONNX](app/src/main/java/jp/axinc/ailia_kotlin/AiliaOnnxClassificationSample.kt) | ailia TFLite Runtime / ailia SDK |
 | Background Removal | [U-2-Net](app/src/main/java/jp/axinc/ailia_kotlin/AiliaU2NetSample.kt) | ailia SDK |
 | Zero-Shot Classification | [multilingual-MiniLMv2 L12](app/src/main/java/jp/axinc/ailia_kotlin/AiliaMiniLMv2Sample.kt) | ailia Tokenizer + ailia SDK |
 | Speech to Text | [Whisper / SenseVoice Small](app/src/main/java/jp/axinc/ailia_kotlin/AiliaSpeechSample.kt) | ailia AI Speech |
