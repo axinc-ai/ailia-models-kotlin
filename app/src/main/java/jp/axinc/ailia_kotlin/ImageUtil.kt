@@ -13,7 +13,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 public class ImageUtil {
-    fun imageProxyToBitmap(image: ImageProxy): Bitmap {
+    fun imageProxyToBitmap(image: ImageProxy, mirror: Boolean = false): Bitmap {
         val width = image.getWidth()
         val height = image.getHeight()
         val nv21 = yuv420888ToNv21(image)
@@ -23,8 +23,24 @@ public class ImageUtil {
         val imageBytes: ByteArray = out.toByteArray()
         val bitmap: Bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
         val matrix = android.graphics.Matrix()
-        matrix.postRotate(90f)
+        // センサー向きは背面90°/前面270°など機種・カメラごとに異なるため、
+        // 固定値ではなくImageProxyが持つ回転情報を使って正立させる
+        matrix.postRotate(image.imageInfo.rotationDegrees.toFloat())
+        if (mirror) {
+            // フロントカメラはPreviewViewと同じ鏡像表示に合わせる
+            matrix.postScale(-1f, 1f)
+        }
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
+    /** 中央を基準に正方形へクロップする */
+    fun cropToSquare(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val newSize = if (width < height) width else height
+        val startX = (width - newSize) / 2
+        val startY = (height - newSize) / 2
+        return Bitmap.createBitmap(bitmap, startX, startY, newSize, newSize)
     }
 
     private fun yuv420888ToNv21(image: ImageProxy): ByteArray {

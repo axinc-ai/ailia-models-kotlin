@@ -16,9 +16,6 @@ import org.junit.runner.RunWith
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.EnumSet
 
 /**
@@ -50,47 +47,16 @@ class OnnxTFLiteInstrumentedTest {
 
     private val context by lazy { InstrumentationRegistry.getInstrumentation().targetContext }
 
-    private fun modelDirectory(): String = context.filesDir.absolutePath
+    private fun modelDirectory(): File = context.filesDir
 
     // =====================================================================
     // Helper: Download file to context.filesDir and return file path
     // =====================================================================
     private fun downloadModel(urlStr: String, fileName: String): String {
         val dir = modelDirectory()
-        val path = "$dir/$fileName"
-        val file = File(path)
-        if (file.exists()) {
-            Log.i(TAG, "Model already exists: $fileName (${file.length()} bytes)")
-            return path
-        }
-        Log.i(TAG, "Downloading model: $fileName from $urlStr ...")
-        file.parentFile?.mkdirs()
-        val tmpFile = File("$path.tmp")
-        val url = URL(urlStr)
-        val connection = url.openConnection() as HttpURLConnection
-        connection.connectTimeout = 30000
-        connection.readTimeout = 120000
-        connection.connect()
-        val responseCode = connection.responseCode
-        if (responseCode != HttpURLConnection.HTTP_OK) {
-            fail("Download failed with HTTP $responseCode for $urlStr")
-        }
-        val totalBytes = connection.contentLengthLong
-        connection.inputStream.use { input ->
-            FileOutputStream(tmpFile).use { output ->
-                val buffer = ByteArray(8192)
-                var bytesDownloaded: Long = 0
-                var bytesRead: Int
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    output.write(buffer, 0, bytesRead)
-                    bytesDownloaded += bytesRead
-                }
-                Log.i(TAG, "Downloaded $bytesDownloaded / $totalBytes bytes")
-            }
-        }
-        assertTrue("Failed to rename temp file", tmpFile.renameTo(file))
-        Log.i(TAG, "Model downloaded: $fileName")
-        return path
+        val file = ModelDownloader.downloadFile(dir, ModelFileSpec(urlStr, fileName))
+        assertNotNull("Model download failed: $fileName", file)
+        return file!!.absolutePath
     }
 
     // =====================================================================
@@ -177,8 +143,8 @@ class OnnxTFLiteInstrumentedTest {
             assertTrue("TFLite ObjectDetection should return valid time", time >= 0)
 
             // Also test without drawing (for tracking use case)
-            val time2 = sample.processObjectDetectionWithoutDrawing(personBmp, w, h, threshold = 0.1f, iou = 1.0f)
-            val results = sample.getDetectionResults(personBmp)
+            val time2 = sample.processObjectDetectionWithoutDrawing(personBmp, threshold = 0.1f, iou = 1.0f)
+            val results = sample.getDetectionResults()
             Log.i(TAG, "TFLite ObjectDetection (no draw) time: ${time2}ms, detections: ${results.size}")
             assertTrue("TFLite should detect at least one object in person.jpg", results.size > 0)
 
@@ -212,7 +178,7 @@ class OnnxTFLiteInstrumentedTest {
             AiliaNetworkImageChannel.FIRST,
             AiliaNetworkImageRange.UNSIGNED_INT8,
             AiliaDetectorAlgorithm.YOLOX,
-            CocoAndImageNetLabels.COCO_CATEGORY.size,
+            CocoLabels.CATEGORY.size,
             EnumSet.noneOf(AiliaDetectorFlags::class.java)
         )
         Log.i(TAG, "AiliaDetectorModel created successfully")
@@ -238,8 +204,8 @@ class OnnxTFLiteInstrumentedTest {
             var personDetected = false
             for (i in 0 until count) {
                 val obj = detector.getObject(i)
-                val label = if (obj.category < CocoAndImageNetLabels.COCO_CATEGORY.size) {
-                    CocoAndImageNetLabels.COCO_CATEGORY[obj.category]
+                val label = if (obj.category < CocoLabels.CATEGORY.size) {
+                    CocoLabels.CATEGORY[obj.category]
                 } else {
                     "class${obj.category}"
                 }
@@ -263,7 +229,7 @@ class OnnxTFLiteInstrumentedTest {
         Log.i(TAG, "=== Test TFLite Classification ===")
 
         val modelData = loadRawResource("mobilenetv2")
-        val sample = AiliaTFLiteClassificationSample()
+        val sample = AiliaTFLiteClassificationSample(modelDirectory())
 
         val initialized = sample.initializeClassification(modelData, AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE)
         assertTrue("TFLite Classification should initialize", initialized)
@@ -322,8 +288,8 @@ class OnnxTFLiteInstrumentedTest {
             assertTrue("ONNX should return at least one class", count > 0)
 
             val topClass = classifier.getClass(0)
-            val label = if (topClass.category < CocoAndImageNetLabels.IMAGENET_CATEGORY.size) {
-                CocoAndImageNetLabels.IMAGENET_CATEGORY[topClass.category]
+            val label = if (topClass.category < ImageNetLabels.CATEGORY.size) {
+                ImageNetLabels.CATEGORY[topClass.category]
             } else {
                 "class${topClass.category}"
             }
@@ -363,8 +329,8 @@ class OnnxTFLiteInstrumentedTest {
             val paint = Paint().apply { style = Paint.Style.STROKE; color = Color.RED; strokeWidth = 3f }
 
             // Run detection
-            val detTime = objDetSample.processObjectDetectionWithoutDrawing(personBmp, w, h, threshold = 0.1f, iou = 1.0f)
-            val detResults = objDetSample.getDetectionResults(personBmp)
+            val detTime = objDetSample.processObjectDetectionWithoutDrawing(personBmp, threshold = 0.1f, iou = 1.0f)
+            val detResults = objDetSample.getDetectionResults()
             Log.i(TAG, "TFLite Detection time: ${detTime}ms, detections: ${detResults.size}")
             assertTrue("TFLite should detect objects for tracking", detResults.isNotEmpty())
 
@@ -398,7 +364,7 @@ class OnnxTFLiteInstrumentedTest {
             AiliaNetworkImageChannel.FIRST,
             AiliaNetworkImageRange.UNSIGNED_INT8,
             AiliaDetectorAlgorithm.YOLOX,
-            CocoAndImageNetLabels.COCO_CATEGORY.size,
+            CocoLabels.CATEGORY.size,
             EnumSet.noneOf(AiliaDetectorFlags::class.java)
         )
         val trackerSample = AiliaTrackerSample()
@@ -417,11 +383,11 @@ class OnnxTFLiteInstrumentedTest {
             val detTime = (System.nanoTime() - startTime) / 1000000
 
             val count = detector.objectCount
-            val detResults = mutableListOf<AiliaTrackerSample.DetectionResult>()
+            val detResults = mutableListOf<DetectionResult>()
             for (i in 0 until count) {
                 val obj = detector.getObject(i)
                 detResults.add(
-                    AiliaTrackerSample.DetectionResult(
+                    DetectionResult(
                         category = obj.category,
                         confidence = obj.prob,
                         x = obj.x,
@@ -475,7 +441,7 @@ class OnnxTFLiteInstrumentedTest {
             AiliaNetworkImageChannel.FIRST,
             AiliaNetworkImageRange.UNSIGNED_INT8,
             AiliaDetectorAlgorithm.YOLOX,
-            CocoAndImageNetLabels.COCO_CATEGORY.size,
+            CocoLabels.CATEGORY.size,
             EnumSet.noneOf(AiliaDetectorFlags::class.java)
         )
 
@@ -486,11 +452,11 @@ class OnnxTFLiteInstrumentedTest {
             val h = personBmp.height
 
             // TFLite detection
-            val tfliteTime = tfliteSample.processObjectDetectionWithoutDrawing(personBmp, w, h, threshold = 0.25f, iou = 0.45f)
-            val tfliteResults = tfliteSample.getDetectionResults(personBmp)
+            val tfliteTime = tfliteSample.processObjectDetectionWithoutDrawing(personBmp, threshold = 0.25f, iou = 0.45f)
+            val tfliteResults = tfliteSample.getDetectionResults()
             Log.i(TAG, "TFLite: ${tfliteResults.size} detections, ${tfliteTime}ms")
             for (r in tfliteResults) {
-                val label = if (r.category < CocoAndImageNetLabels.COCO_CATEGORY.size) CocoAndImageNetLabels.COCO_CATEGORY[r.category] else "class${r.category}"
+                val label = if (r.category < CocoLabels.CATEGORY.size) CocoLabels.CATEGORY[r.category] else "class${r.category}"
                 Log.i(TAG, "  TFLite: $label (${r.confidence}) @ [${r.x}, ${r.y}, ${r.width}, ${r.height}]")
             }
 
@@ -503,7 +469,7 @@ class OnnxTFLiteInstrumentedTest {
             var onnxPersonDetected = false
             for (i in 0 until onnxCount) {
                 val obj = onnxDetector.getObject(i)
-                val label = if (obj.category < CocoAndImageNetLabels.COCO_CATEGORY.size) CocoAndImageNetLabels.COCO_CATEGORY[obj.category] else "class${obj.category}"
+                val label = if (obj.category < CocoLabels.CATEGORY.size) CocoLabels.CATEGORY[obj.category] else "class${obj.category}"
                 Log.i(TAG, "  ONNX: $label (${obj.prob}) @ [${obj.x}, ${obj.y}, ${obj.w}, ${obj.h}]")
                 if (obj.category == 0) onnxPersonDetected = true
             }
@@ -530,7 +496,7 @@ class OnnxTFLiteInstrumentedTest {
 
         // --- TFLite ---
         val tfliteModelData = loadRawResource("mobilenetv2")
-        val tfliteSample = AiliaTFLiteClassificationSample()
+        val tfliteSample = AiliaTFLiteClassificationSample(modelDirectory())
         assertTrue("TFLite Classification should initialize",
             tfliteSample.initializeClassification(tfliteModelData, AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE))
 
@@ -564,8 +530,8 @@ class OnnxTFLiteInstrumentedTest {
             val onnxCount = onnxClassifier.classCount
             assertTrue("ONNX should return classes", onnxCount > 0)
             val topClass = onnxClassifier.getClass(0)
-            val onnxLabel = if (topClass.category < CocoAndImageNetLabels.IMAGENET_CATEGORY.size) {
-                CocoAndImageNetLabels.IMAGENET_CATEGORY[topClass.category]
+            val onnxLabel = if (topClass.category < ImageNetLabels.CATEGORY.size) {
+                ImageNetLabels.CATEGORY[topClass.category]
             } else {
                 "class${topClass.category}"
             }
