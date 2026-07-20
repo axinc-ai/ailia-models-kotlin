@@ -103,8 +103,10 @@ class MainActivity : AppCompatActivity() {
     private var speechIntermediateText: String? = null
 
     private val modelDirectory by lazy { ModelDownloader.modelDirectory(this) }
-    private val poseEstimatorSample = AiliaPoseEstimatorSample()
-    private val objectDetectionSample = AiliaTFLiteObjectDetectionSample()
+    private val poseEstimatorSample by lazy { AiliaPoseEstimatorSample(modelDirectory) }
+    private val objectDetectionSample by lazy {
+        AiliaTFLiteObjectDetectionSample(modelDirectory)
+    }
     private val classificationSample by lazy { AiliaTFLiteClassificationSample(modelDirectory) }
     private val miniLMv2Sample by lazy { AiliaMiniLMv2Sample(modelDirectory) }
     private val trackerSample = AiliaTrackerSample()
@@ -227,9 +229,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        init {
+            System.loadLibrary("ailia")
+        }
+
         private const val REQUEST_CODE_CAMERA_PERMISSION = 10
         private const val REQUEST_CODE_AUDIO_PERMISSION = 11
-
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -423,6 +428,18 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.CLASSIFICATION,
             AlgorithmType.BACKGROUND_REMOVAL,
             AlgorithmType.TOKENIZE -> true
+            else -> false
+        }
+    }
+
+    /** CameraFrameAnalyzerで画像推論を行うアルゴリズムかどうか。 */
+    private fun usesVisionCameraInference(algorithm: AlgorithmType): Boolean {
+        return when (algorithm) {
+            AlgorithmType.POSE_ESTIMATION,
+            AlgorithmType.OBJECT_DETECTION,
+            AlgorithmType.TRACKING,
+            AlgorithmType.CLASSIFICATION,
+            AlgorithmType.BACKGROUND_REMOVAL -> true
             else -> false
         }
     }
@@ -818,6 +835,7 @@ class MainActivity : AppCompatActivity() {
                     voiceResultTextView.text = ""
                     voiceInputEditText.setText(newType.defaultText)
                     voiceStatusTextView.text = "Status: Press Generate to synthesize"
+                    processingTimeTextView.text = "Processing Time: -- ms"
                 }
             }
             AlgorithmType.LLM -> {
@@ -1379,7 +1397,7 @@ class MainActivity : AppCompatActivity() {
                         if (!isCurrentOperation(operationId)) return
                         runOnUiThreadIfActive {
                             if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
-                            showModelDownloadProgress(bytesDownloaded, totalBytes)
+                            showModelDownloadProgress(fileName, bytesDownloaded, totalBytes)
                         }
                     }
 
@@ -1428,10 +1446,12 @@ class MainActivity : AppCompatActivity() {
         try {
             when (currentAlgorithm) {
                 AlgorithmType.POSE_ESTIMATION -> {
-                    val proto: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_proto)
-                    val model: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_weight)
-                    isInitialized =
-                        poseEstimatorSample.initializePoseEstimator(selectedEnvId, proto, model)
+                    initializeDownloadedModelAsync(
+                        logName = "Lightweight Human Pose",
+                        download = { poseEstimatorSample.downloadModel(it) },
+                        initialize = { poseEstimatorSample.initializePoseEstimator(selectedEnvId) },
+                    )
+                    return
                 }
 
                 AlgorithmType.OBJECT_DETECTION -> {
@@ -1452,12 +1472,14 @@ class MainActivity : AppCompatActivity() {
                         )
                         return
                     } else {
-                        //val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
-                        val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_s)
-                        isInitialized = objectDetectionSample.initializeObjectDetection(
-                            yoloxModel,
-                            env = selectedEnvId
+                        initializeDownloadedModelAsync(
+                            logName = "TFLite YOLOX-S",
+                            download = { objectDetectionSample.downloadModel(it) },
+                            initialize = {
+                                objectDetectionSample.initializeFromFile(env = selectedEnvId)
+                            },
                         )
+                        return
                     }
                 }
 
@@ -1471,21 +1493,15 @@ class MainActivity : AppCompatActivity() {
                             }
                         )
                         return
-                    } else if (classificationSample.modelType == TFLiteClassificationModelType.RESNET50) {
+                    } else {
                         initializeDownloadedModelAsync(
-                            logName = "TFLite ResNet50",
+                            logName = "TFLite ${classificationSample.modelType.displayName}",
                             download = { classificationSample.downloadModel(it) },
                             initialize = {
                                 classificationSample.initializeFromFile(env = selectedEnvId)
-                            }
+                            },
                         )
                         return
-                    } else {
-                        val classificationModel: ByteArray? = loadRawFile(R.raw.mobilenetv2)
-                        isInitialized = classificationSample.initializeClassification(
-                            classificationModel,
-                            env = selectedEnvId
-                        )
                     }
                 }
 
@@ -1512,15 +1528,16 @@ class MainActivity : AppCompatActivity() {
                         )
                         return
                     } else {
-                        //val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
-                        val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_s)
-                        if (objectDetectionSample.initializeObjectDetection(
-                                yoloxModel,
-                                env = selectedEnvId
-                            )
-                        ) {
-                            isInitialized = trackerSample.initializeTracker()
-                        }
+                        initializeDownloadedModelAsync(
+                            logName = "TFLite Tracking",
+                            download = { objectDetectionSample.downloadModel(it) },
+                            initialize = {
+                                val detectorSuccess =
+                                    objectDetectionSample.initializeFromFile(env = selectedEnvId)
+                                detectorSuccess && trackerSample.initializeTracker()
+                            },
+                        )
+                        return
                     }
                 }
 
@@ -1558,12 +1575,6 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
             }
-
-            if (isInitialized) {
-                Log.i("AILIA_Main", "Algorithm ${currentAlgorithm.name} initialized successfully")
-            } else {
-                Log.e("AILIA_Error", "Failed to initialize algorithm ${currentAlgorithm.name}")
-            }
         } catch (e: Exception) {
             Log.e(
                 "AILIA_Error",
@@ -1599,8 +1610,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** モデルダウンロードの進捗を画面下部の共通ProgressBarへ表示する。 */
-    private fun showModelDownloadProgress(bytesDownloaded: Long = 0, totalBytes: Long = 0) {
-        modelDownloadProgressTextView.text = formatDownloadProgress(bytesDownloaded, totalBytes)
+    private fun showModelDownloadProgress(
+        fileName: String? = null,
+        bytesDownloaded: Long = 0,
+        totalBytes: Long = 0,
+    ) {
+        modelDownloadProgressTextView.text =
+            formatDownloadProgress(fileName, bytesDownloaded, totalBytes)
         modelDownloadProgressTextView.visibility = View.VISIBLE
         modelDownloadProgressBar.visibility = View.VISIBLE
         if (totalBytes > 0) {
@@ -1717,11 +1733,13 @@ class MainActivity : AppCompatActivity() {
                     llmSample.initialize(this@MainActivity, object : ModelDownloader.DownloadListener {
                         override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
                             if (!isCurrentOperation(operationId)) return
-                            val percent = if (totalBytes > 0) bytesDownloaded * 100 / totalBytes else 0
                             runOnUiThreadIfActive {
                                 if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
-                                llmStatusTextView.text = "Status: Downloading model... $percent%"
-                                showModelDownloadProgress(bytesDownloaded, totalBytes)
+                                showModelDownloadProgress(
+                                    modelType.fileName,
+                                    bytesDownloaded,
+                                    totalBytes,
+                                )
                             }
                         }
 
@@ -1834,11 +1852,9 @@ class MainActivity : AppCompatActivity() {
                     val listener = object : AiliaMultimodalLLMSample.MultimodalLLMListener {
                         override fun onDownloadProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                             if (!isCurrentOperation(operationId)) return
-                            val percent = if (totalBytes > 0) bytesDownloaded * 100 / totalBytes else 0
                             runOnUiThreadIfActive {
                                 if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
-                                llmStatusTextView.text = "Status: Downloading $fileName... $percent%"
-                                showModelDownloadProgress(bytesDownloaded, totalBytes)
+                                showModelDownloadProgress(fileName, bytesDownloaded, totalBytes)
                             }
                         }
 
@@ -1947,9 +1963,7 @@ class MainActivity : AppCompatActivity() {
             voiceWaveformView.clear()
             voiceStatusTextView.text =
                 if (needsInitialization) "Status: Initializing..." else "Status: Generating..."
-            if (needsInitialization) {
-                processingTimeTextView.text = "Processing Time: -- ms"
-            }
+            processingTimeTextView.text = "Processing Time: -- ms"
 
             cameraExecutor.execute {
                 try {
@@ -1959,11 +1973,9 @@ class MainActivity : AppCompatActivity() {
                         voiceSample.initializeVoice(envId = envId, listener = object : ModelDownloadListener {
                             override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                                 if (!isCurrentOperation(operationId)) return
-                                val percent = if (totalBytes > 0) bytesDownloaded * 100 / totalBytes else 0
                                 runOnUiThreadIfActive {
                                     if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
-                                    voiceStatusTextView.text = "Status: Downloading $fileName... $percent%"
-                                    showModelDownloadProgress(bytesDownloaded, totalBytes)
+                                    showModelDownloadProgress(fileName, bytesDownloaded, totalBytes)
                                 }
                             }
 
@@ -2016,6 +2028,7 @@ class MainActivity : AppCompatActivity() {
                             voiceStatusTextView.text = "Status: Complete"
                             voiceResultTextView.text = "${modelType.displayName} Generated"
                             processingTimeTextView.text = "Processing Time: ${inferenceTime}ms"
+                            scrollResultToBottom()
                         } else {
                             voiceStatusTextView.text = "Status: Generation failed"
                         }
@@ -2433,8 +2446,7 @@ class MainActivity : AppCompatActivity() {
                     override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                         runOnUiThreadIfActive {
                             if (isCurrentOperation(operationId)) {
-                                speakerStatusTextView.text = "Status: Downloading $fileName"
-                                showModelDownloadProgress(bytesDownloaded, totalBytes)
+                                showModelDownloadProgress(fileName, bytesDownloaded, totalBytes)
                             }
                         }
                     }
@@ -2831,8 +2843,7 @@ class MainActivity : AppCompatActivity() {
                     override fun onProgress(fileName: String, bytesDownloaded: Long, totalBytes: Long) {
                         runOnUiThreadIfActive {
                             if (isCurrentOperation(operationId)) {
-                                speakerStatusTextView.text = "Status: Downloading $fileName"
-                                showModelDownloadProgress(bytesDownloaded, totalBytes)
+                                showModelDownloadProgress(fileName, bytesDownloaded, totalBytes)
                             }
                         }
                     }
@@ -3227,7 +3238,7 @@ class MainActivity : AppCompatActivity() {
                         Log.d("AILIA_Main", "Speech: downloading $fileName")
                         runOnUiThreadIfActive {
                             if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
-                            showModelDownloadProgress(bytesDownloaded, totalBytes)
+                            showModelDownloadProgress(fileName, bytesDownloaded, totalBytes)
                         }
                     }
                     override fun onComplete() {}
@@ -3356,9 +3367,14 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            override fun onResult(lines: List<String>, isFinal: Boolean) {
+            override fun onResult(
+                lines: List<String>,
+                isFinal: Boolean,
+                processingTimeMs: Long,
+            ) {
                 runOnUiThreadIfActive {
                     appendTranscriptLines(lines)
+                    processingTimeTextView.text = "Processing Time: $processingTimeMs ms"
                     if (isFinal) {
                         speechIntermediateText = null
                         updateTranscriptDisplay()
@@ -3389,6 +3405,7 @@ class MainActivity : AppCompatActivity() {
         if (started) {
             micRecordButton.text = "Stop"
             classificationResultTextView.text = "Recording..."
+            processingTimeTextView.text = "Processing Time: -- ms"
             clearTranscript()
 
             // 波形表示とREC経過時間の初期化
@@ -3444,32 +3461,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // TOKENIZE (MiniLMv2) is async download + init
-        if (currentAlgorithm == AlgorithmType.TOKENIZE) {
-            if (!isInitialized) {
-                initializeAilia()
-                return
-            }
-        }
-
-        // 非同期モデルダウンロードが必要なモード
-        if (selectedRuntime == "ONNX" && (currentAlgorithm == AlgorithmType.OBJECT_DETECTION ||
-                    currentAlgorithm == AlgorithmType.CLASSIFICATION ||
-                    currentAlgorithm == AlgorithmType.BACKGROUND_REMOVAL ||
-                    currentAlgorithm == AlgorithmType.TRACKING)) {
-            if (!isInitialized) {
-                initializeAilia()
-                return
-            }
-        }
-
-        // TFLiteのResNet50もダウンロードが必要なため非同期で初期化する
-        if (currentAlgorithm == AlgorithmType.CLASSIFICATION && selectedRuntime == "TFLite" &&
-            classificationSample.modelType == TFLiteClassificationModelType.RESNET50) {
-            if (!isInitialized) {
-                initializeAilia()
-                return
-            }
+        // 画像系とTokenizerのモデルはすべて非同期でダウンロード・初期化する。
+        // UIスレッドから初期化を開始してここで戻り、完了コールバックから推論へ進む。
+        // 推論Executor内で初期化を予約すると、予約直後の未初期化状態を失敗と誤判定する。
+        if (needsVisionRunButton() && !isInitialized) {
+            initializeAilia()
+            return
         }
 
         // TEXT_TO_SPEECHはGenerate押下時にダウンロード+初期化する
@@ -3512,13 +3509,7 @@ class MainActivity : AppCompatActivity() {
     private fun runImageModeInference(tokenizerInput: String) {
         try {
             if (!isInitialized) {
-                initializeAilia()
-            }
-
-            if (!isInitialized) {
-                runOnUiThreadIfActive {
-                    processingTimeTextView.text = "Initialization failed"
-                }
+                Log.w("AILIA_Main", "Skipping image inference because initialization is pending")
                 return
             }
 
@@ -3621,17 +3612,15 @@ class MainActivity : AppCompatActivity() {
 
     private inner class CameraFrameAnalyzer : ImageAnalysis.Analyzer {
         override fun analyze(image: ImageProxy) {
-            // Tokenizerは静止テキストに対する1ショット推論のみ。
-            // 直前のアルゴリズムがCamera Modeでも解析ループへ流さない。
-            if (currentAlgorithm == AlgorithmType.TOKENIZE ||
-                currentAlgorithm == AlgorithmType.SPEAKER_VERIFICATION ||
-                currentAlgorithm == AlgorithmType.VOICE_FILTER) {
-                image.close()
-                return
-            }
             // MultimodalLLMはプレビュー表示とフレーム保持のみ行う(推論はSend押下時)
             if (currentAlgorithm == AlgorithmType.MULTIMODAL_LLM) {
                 processCameraFrame(image)
+                image.close()
+                return
+            }
+            // 非画像系は、直前のCamera Modeが選択されたままでも解析しない。
+            // TTSなどが表示したProcessing Timeを0ms/FPS:0で上書きするのを防ぐ。
+            if (!usesVisionCameraInference(currentAlgorithm)) {
                 image.close()
                 return
             }
@@ -3799,34 +3788,21 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    @Throws(IOException::class)
-    fun inputStreamToByteArray(`in`: InputStream): ByteArray? {
-        val bout = ByteArrayOutputStream()
-        BufferedOutputStream(bout).use { out ->
-            val buf = ByteArray(128)
-            while (true) {
-                val count = `in`.read(buf)
-                if (count <= 0) break
-                out.write(buf, 0, count)
-            }
-        }
-        return bout.toByteArray()
-    }
-
-    @Throws(IOException::class)
-    fun loadRawFile(resourceId: Int): ByteArray? {
-        val resources = this.resources
-        resources.openRawResource(resourceId).use { `in` -> return inputStreamToByteArray(`in`) }
-    }
 }
 
-internal fun formatDownloadProgress(bytesDownloaded: Long, totalBytes: Long): String {
+internal fun formatDownloadProgress(
+    fileName: String?,
+    bytesDownloaded: Long,
+    totalBytes: Long,
+): String {
     val bytesPerMegabyte = 1024.0 * 1024.0
     val downloadedMb = bytesDownloaded.coerceAtLeast(0) / bytesPerMegabyte
-    return if (totalBytes > 0) {
+    val sizeText = if (totalBytes > 0) {
         val totalMb = totalBytes / bytesPerMegabyte
-        String.format(Locale.ROOT, "Downloading %.1f / %.1f MB", downloadedMb, totalMb)
+        String.format(Locale.ROOT, "%.1f / %.1f MB", downloadedMb, totalMb)
     } else {
-        String.format(Locale.ROOT, "Downloading %.1f MB", downloadedMb)
+        String.format(Locale.ROOT, "%.1f MB", downloadedMb)
     }
+    return listOfNotNull("Downloading", fileName?.takeIf { it.isNotBlank() }, sizeText)
+        .joinToString(" ")
 }
