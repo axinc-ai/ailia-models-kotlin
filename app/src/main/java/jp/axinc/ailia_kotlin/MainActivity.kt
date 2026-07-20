@@ -190,7 +190,7 @@ class MainActivity : AppCompatActivity() {
     private var lastSpeakerMicSampleRate = SpeakerVerificationAudio.SAMPLE_RATE
     private var speakerPlayback: SpeakerPlayback? = null
     private var voiceFilterReferences = emptyList<SpeakerReference>()
-    private var presetVoiceFilterEmbedding: FloatArray? = null
+    private val presetVoiceFilterEmbeddings = mutableMapOf<Int, FloatArray>()
     private var voiceFilterRecordingPurpose: VoiceFilterRecordingPurpose? = null
     private var lastVoiceFilterMicAudio: FloatArray? = null
     private var lastVoiceFilterMicSampleRate = VoiceFilterAudio.SAMPLE_RATE
@@ -2609,7 +2609,7 @@ class MainActivity : AppCompatActivity() {
         speechExecutor.execute {
             try {
                 val result = weSpeakerSample.extractEmbedding(audio, 1, sampleRate)
-                val profile = speakerProfileStore.save(name, result.embedding, audio, sampleRate)
+                val profile = speakerProfileStore.add(name, result.embedding, audio, sampleRate)
                 runOnUiThreadIfActive {
                     if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                     refreshSpeakerProfiles(profile.id)
@@ -2767,9 +2767,16 @@ class MainActivity : AppCompatActivity() {
         voiceFilterReferences = listOf(
             SpeakerReference(
                 name = "ailia-models ref-voice (preset)",
-                embedding = presetVoiceFilterEmbedding,
+                embedding = presetVoiceFilterEmbeddings[R.raw.voicefilter_ref_voice],
                 presetRawResource = R.raw.voicefilter_ref_voice,
-            )
+            ),
+            SpeakerReference(
+                name = "ailia-models reference_audio_captured_by_ax (preset)",
+                embedding = presetVoiceFilterEmbeddings[
+                    R.raw.voicefilter_reference_audio_captured_by_ax
+                ],
+                presetRawResource = R.raw.voicefilter_reference_audio_captured_by_ax,
+            ),
         ) + customProfiles.map { profile ->
             SpeakerReference(
                 name = profile.name,
@@ -2785,8 +2792,8 @@ class MainActivity : AppCompatActivity() {
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         speakerProfileSpinner.adapter = adapter
         if (selectProfileId != null) {
-            val selectedProfile = customProfiles.indexOfFirst { it.id == selectProfileId }
-            if (selectedProfile >= 0) speakerProfileSpinner.setSelection(selectedProfile + 1)
+            val selectedProfile = voiceFilterReferences.indexOfFirst { it.profileId == selectProfileId }
+            if (selectedProfile >= 0) speakerProfileSpinner.setSelection(selectedProfile)
         }
     }
 
@@ -2929,15 +2936,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadPresetVoiceFilterEmbedding(reference: SpeakerReference): FloatArray {
-        presetVoiceFilterEmbedding?.let { return it }
         val resource = reference.presetRawResource ?: error("Target speaker embedding is missing")
+        presetVoiceFilterEmbeddings[resource]?.let { return it }
         val wav = AudioUtil().loadRawAudio(resources.openRawResource(resource))
         val embedding = voiceFilterSample.createEmbedding(
             wav.audioData,
             wav.channels,
             wav.sampleRate,
         ).embedding
-        presetVoiceFilterEmbedding = embedding
+        presetVoiceFilterEmbeddings[resource] = embedding
         return embedding
     }
 
@@ -3009,7 +3016,7 @@ class MainActivity : AppCompatActivity() {
         speechExecutor.execute {
             try {
                 val result = voiceFilterSample.createEmbedding(audio, 1, sampleRate)
-                val profile = voiceFilterProfileStore.save(name, result.embedding, audio, sampleRate)
+                val profile = voiceFilterProfileStore.add(name, result.embedding, audio, sampleRate)
                 runOnUiThreadIfActive {
                     if (!isCurrentOperation(operationId)) return@runOnUiThreadIfActive
                     refreshVoiceFilterProfiles(profile.id)
@@ -3166,12 +3173,12 @@ class MainActivity : AppCompatActivity() {
             return AudioUtil().loadRawAudio(resources.openRawResource(resource))
         }
         val profileId = reference.profileId ?: error("Reference audio is unavailable")
-        val savedAudio = profileStore.loadAudio(profileId)
-            ?: error("Add this speaker again to enable playback")
+        val sessionAudio = profileStore.loadAudio(profileId)
+            ?: error("Record this speaker again to enable playback")
         return AudioUtil.WavFileData(
-            sampleRate = savedAudio.sampleRate,
+            sampleRate = sessionAudio.sampleRate,
             channels = 1,
-            audioData = savedAudio.audioData,
+            audioData = sessionAudio.audioData,
         )
     }
 

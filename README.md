@@ -75,8 +75,8 @@ The inference-facing result classes are independent of the SDK wrappers:
 - Detection and tracking: `DetectionResult.kt`, `ModelInferenceResult.kt`, `CocoLabels.kt`, and `CategoryColors.kt`
 - Classification: `ClassificationResult.kt`, `ModelInferenceResult.kt`, and `ImageNetLabels.kt`
 - Background removal: `ModelInferenceResult.kt` (`SegmentationMask`)
-- Speaker verification: `SpeakerVerificationAudio.kt` and `SpeakerProfileStore.kt`
-- Voice filtering: `VoiceFilterAudio.kt` and `SpeakerProfileStore.kt`
+- Speaker verification: `SpeakerVerificationAudio.kt` and the session-only `SpeakerProfileStore.kt`
+- Voice filtering: `VoiceFilterAudio.kt` and the session-only `SpeakerProfileStore.kt`
 
 `detect`, `classify`, and `predictMask` return typed results without drawing. `drawDetections` and `drawMask` are optional Android renderers. The `process...` methods remain small compatibility wrappers used by the demo UI.
 
