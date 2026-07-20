@@ -54,6 +54,26 @@ class VoiceFilterAudioTest {
     }
 
     @Test
+    fun shortReferenceIsZeroPaddedForDynamicEmbedder() {
+        val audio = floatArrayOf(0.25f, -0.5f, 0.75f)
+
+        val padded = VoiceFilterAudio.padForDynamicEmbedder(audio)
+
+        assertEquals(VoiceFilterAudio.DYNAMIC_EMBEDDER_MIN_SAMPLES, padded.size)
+        assertEquals(0.25f, padded[0], 0f)
+        assertEquals(-0.5f, padded[1], 0f)
+        assertEquals(0.75f, padded[2], 0f)
+        assertTrue(padded.copyOfRange(audio.size, padded.size).all { it == 0f })
+    }
+
+    @Test
+    fun sufficientlyLongReferenceIsNotPadded() {
+        val audio = FloatArray(VoiceFilterAudio.DYNAMIC_EMBEDDER_MIN_SAMPLES + 1)
+
+        assertTrue(audio === VoiceFilterAudio.padForDynamicEmbedder(audio))
+    }
+
+    @Test
     fun inverseSpectrogramMatchesOfficialLibrosaPipeline() {
         val spectrum = VoiceFilterAudio.analysisSpectrum(testTone())
         val output = VoiceFilterAudio.reconstruct(spectrum, FloatArray(spectrum.magnitude.size) { 1f })

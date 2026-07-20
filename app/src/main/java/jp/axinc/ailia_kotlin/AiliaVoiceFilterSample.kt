@@ -33,7 +33,7 @@ data class VoiceFilterResult(
 /**
  * Standalone port of ailia-models/audio_processing/voicefilter.
  *
- * The class downloads and owns the VoiceFilter mask model and its d-vector
+ * The class downloads and owns the VoiceFilter mask model and its dynamic d-vector
  * embedder together with Silero VAD v6. It also exposes a small microphone
  * recorder and PCM player so the sample can be copied independently of MainActivity.
  */
@@ -51,10 +51,10 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
         private const val FILTER_MODEL_FILE = "voicefilter_model.onnx"
         private const val FILTER_PROTO_URL = "${REMOTE_PATH}model.onnx.prototxt"
         private const val FILTER_PROTO_FILE = "voicefilter_model.onnx.prototxt"
-        private const val EMBEDDER_MODEL_URL = "${REMOTE_PATH}embedder.onnx"
-        private const val EMBEDDER_MODEL_FILE = "voicefilter_embedder.onnx"
-        private const val EMBEDDER_PROTO_URL = "${REMOTE_PATH}embedder.onnx.prototxt"
-        private const val EMBEDDER_PROTO_FILE = "voicefilter_embedder.onnx.prototxt"
+        private const val EMBEDDER_MODEL_URL = "${REMOTE_PATH}embedder_dynamic.onnx"
+        private const val EMBEDDER_MODEL_FILE = "voicefilter_embedder_dynamic.onnx"
+        private const val EMBEDDER_PROTO_URL = "${REMOTE_PATH}embedder_dynamic.onnx.prototxt"
+        private const val EMBEDDER_PROTO_FILE = "voicefilter_embedder_dynamic.onnx.prototxt"
         private const val VAD_MODEL_URL =
             "https://storage.googleapis.com/ailia-models/silero-vad/silero_vad_v6.onnx"
         private const val VAD_MODEL_FILE = "silero_vad_v6.onnx"
@@ -76,6 +76,8 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
     private var embedderModel: AiliaModel? = null
     private var vadModel: AiliaModel? = null
     @Volatile private var initialized = false
+    @Volatile var lastErrorMessage: String? = null
+        private set
 
     private val recording = AtomicBoolean(false)
     private val cancelRecording = AtomicBoolean(false)
@@ -109,6 +111,7 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
 
     fun initialize(envId: Int): Boolean {
         releaseModels()
+        lastErrorMessage = null
         return try {
             filterModel = AiliaModel(
                 envId,
@@ -132,6 +135,7 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
             true
         } catch (e: Exception) {
             Log.e(TAG, "Initialization failed", e)
+            lastErrorMessage = "VoiceFilter initialization failed: ${errorReason(e)}"
             releaseModels()
             false
         }
@@ -147,28 +151,45 @@ class AiliaVoiceFilterSample(private val modelDirectory: File) {
         val mono = VoiceFilterAudio.toMono16k(interleavedAudio, channels, sampleRate)
         require(mono.isNotEmpty()) { "Reference audio is empty" }
         val speech = separateSpeech(mono)
-        require(speech.size >= VoiceFilterAudio.SAMPLE_RATE) {
-            "At least 1 second of reference speech is required"
-        }
-        val mel = VoiceFilterAudio.melSpectrogram(speech)
+        val embedderAudio = VoiceFilterAudio.padForDynamicEmbedder(speech)
+        val mel = VoiceFilterAudio.melSpectrogram(embedderAudio)
         val frameCount = mel.size / VoiceFilterAudio.MEL_BINS
         val model = checkNotNull(embedderModel)
-        val inputIndex = Ailia.FindBlobIndexByName(model.handle, "dvec_mel")
-        model.setInputBlobShapeND(intArrayOf(VoiceFilterAudio.MEL_BINS, frameCount), inputIndex)
-        model.setInputBlobData(mel, mel.size * Float.SIZE_BYTES, inputIndex)
-        model.update()
-        val embedding = FloatArray(EMBEDDING_SIZE)
-        model.getBlobData(
-            embedding,
-            embedding.size * Float.SIZE_BYTES,
-            Ailia.FindBlobIndexByName(model.handle, "dvec"),
-        )
+        lastErrorMessage = null
+        val embedding = runEmbedder(model, mel, frameCount)
         return VoiceFilterEmbeddingResult(
             embedding = embedding,
             referenceDurationMs = speech.size * 1_000L / VoiceFilterAudio.SAMPLE_RATE,
             processingTimeMs = (System.nanoTime() - startedAt) / 1_000_000,
         )
     }
+
+    private fun runEmbedder(model: AiliaModel, mel: FloatArray, frameCount: Int): FloatArray {
+        return try {
+            val inputIndex = Ailia.FindBlobIndexByName(model.handle, "dvec_mel")
+            model.setInputBlobShapeND(intArrayOf(VoiceFilterAudio.MEL_BINS, frameCount), inputIndex)
+            model.setInputBlobData(mel, mel.size * Float.SIZE_BYTES, inputIndex)
+            model.update()
+            FloatArray(EMBEDDING_SIZE).also { embedding ->
+                model.getBlobData(
+                    embedding,
+                    embedding.size * Float.SIZE_BYTES,
+                    Ailia.FindBlobIndexByName(model.handle, "dvec"),
+                )
+            }
+        } catch (e: Exception) {
+            val detail = runCatching { Ailia.GetErrorDetail(model.handle) }
+                .getOrNull()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val reason = detail ?: errorReason(e)
+            lastErrorMessage = "VoiceFilter embedder inference failed: $reason"
+            throw IllegalStateException(lastErrorMessage, e)
+        }
+    }
+
+    private fun errorReason(error: Exception): String =
+        error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
 
     fun filter(
         referenceEmbedding: FloatArray,

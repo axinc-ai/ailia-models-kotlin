@@ -33,6 +33,7 @@ object VoiceFilterAudio {
     const val FILTER_FREQUENCY_BINS = FILTER_FFT_SIZE / 2 + 1
     const val EMBEDDER_FFT_SIZE = 512
     const val MEL_BINS = 40
+    const val DYNAMIC_EMBEDDER_MIN_SAMPLES = SAMPLE_RATE * 8 / 10
 
     private const val HOP_LENGTH = 160
     private const val WINDOW_LENGTH = 400
@@ -101,6 +102,16 @@ object VoiceFilterAudio {
             }
         }
         return output
+    }
+
+    /** Pads short references to the dynamic embedder's 80-frame (0.8 s) window. */
+    fun padForDynamicEmbedder(audio: FloatArray): FloatArray {
+        require(audio.isNotEmpty()) { "Reference audio is empty" }
+        return if (audio.size < DYNAMIC_EMBEDDER_MIN_SAMPLES) {
+            audio.copyOf(DYNAMIC_EMBEDDER_MIN_SAMPLES)
+        } else {
+            audio
+        }
     }
 
     fun analysisSpectrum(audio: FloatArray): VoiceFilterSpectrum {

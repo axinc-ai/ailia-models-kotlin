@@ -167,6 +167,7 @@ class MainActivity : AppCompatActivity() {
         val name: String,
         val embedding: FloatArray? = null,
         val presetRawResource: Int? = null,
+        val presetInputRawResource: Int? = null,
         val profileId: String? = null,
     )
 
@@ -183,7 +184,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var speakerReferences = emptyList<SpeakerReference>()
-    private var presetSpeakerEmbedding: FloatArray? = null
+    private val presetSpeakerEmbeddings = mutableMapOf<Int, FloatArray>()
     private var speakerRecordingPurpose: SpeakerRecordingPurpose? = null
     private var lastSpeakerMicAudio: FloatArray? = null
     private var lastSpeakerMicSampleRate = SpeakerVerificationAudio.SAMPLE_RATE
@@ -688,7 +689,7 @@ class MainActivity : AppCompatActivity() {
             }
             AlgorithmType.VOICE_FILTER -> {
                 selectedRuntime = "ONNX"
-                arrayOf("VoiceFilter + d-vector embedder + Silero VAD v6")
+                arrayOf("VoiceFilter + dynamic d-vector embedder + Silero VAD v6")
             }
         }
 
@@ -2266,9 +2267,16 @@ class MainActivity : AppCompatActivity() {
         speakerReferences = listOf(
             SpeakerReference(
                 name = "ailia-models 00001_spk1 (preset)",
-                embedding = presetSpeakerEmbedding,
+                embedding = presetSpeakerEmbeddings[R.raw.wespeaker_00001_spk1],
                 presetRawResource = R.raw.wespeaker_00001_spk1,
-            )
+                presetInputRawResource = R.raw.wespeaker_00024_spk1,
+            ),
+            SpeakerReference(
+                name = "ailia-models 00003_spk2 (preset)",
+                embedding = presetSpeakerEmbeddings[R.raw.wespeaker_00003_spk2],
+                presetRawResource = R.raw.wespeaker_00003_spk2,
+                presetInputRawResource = R.raw.wespeaker_00010_spk2,
+            ),
         ) + customProfiles.map { profile ->
             SpeakerReference(
                 name = profile.name,
@@ -2284,8 +2292,8 @@ class MainActivity : AppCompatActivity() {
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         speakerProfileSpinner.adapter = adapter
         if (selectProfileId != null) {
-            val selectedProfile = customProfiles.indexOfFirst { it.id == selectProfileId }
-            if (selectedProfile >= 0) speakerProfileSpinner.setSelection(selectedProfile + 1)
+            val selectedProfile = speakerReferences.indexOfFirst { it.profileId == selectProfileId }
+            if (selectedProfile >= 0) speakerProfileSpinner.setSelection(selectedProfile)
         }
     }
 
@@ -2394,7 +2402,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadSpeakerInputAudio(): AudioUtil.WavFileData {
         return if (speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton) {
-            AudioUtil().loadRawAudio(resources.openRawResource(R.raw.wespeaker_00024_spk1))
+            val reference = speakerReferences.getOrNull(speakerProfileSpinner.selectedItemPosition)
+            val inputResource = reference?.presetInputRawResource ?: R.raw.wespeaker_00024_spk1
+            AudioUtil().loadRawAudio(resources.openRawResource(inputResource))
         } else {
             AudioUtil.WavFileData(
                 sampleRate = lastSpeakerMicSampleRate,
@@ -2462,7 +2472,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun verifySelectedSpeakerWav() {
         val audio = try {
-            AudioUtil().loadRawAudio(resources.openRawResource(R.raw.wespeaker_00024_spk1))
+            loadSpeakerInputAudio()
         } catch (e: Exception) {
             speakerStatusTextView.text = "Status: WAV error - ${e.message}"
             return
@@ -2518,11 +2528,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadPresetSpeakerEmbedding(reference: SpeakerReference): FloatArray {
-        presetSpeakerEmbedding?.let { return it }
         val resource = reference.presetRawResource ?: error("Reference embedding is missing")
+        presetSpeakerEmbeddings[resource]?.let { return it }
         val wav = AudioUtil().loadRawAudio(resources.openRawResource(resource))
         val embedding = weSpeakerSample.extractEmbedding(wav.audioData, wav.channels, wav.sampleRate).embedding
-        presetSpeakerEmbedding = embedding
+        presetSpeakerEmbeddings[resource] = embedding
         return embedding
     }
 
@@ -2831,7 +2841,8 @@ class MainActivity : AppCompatActivity() {
                         speakerStatusTextView.text = "Status: Ready"
                         onReady()
                     } else {
-                        speakerStatusTextView.text = "Status: Initialization failed"
+                        speakerStatusTextView.text =
+                            "Status: ${voiceFilterSample.lastErrorMessage ?: "Initialization failed"}"
                     }
                 }
             } catch (e: Exception) {
