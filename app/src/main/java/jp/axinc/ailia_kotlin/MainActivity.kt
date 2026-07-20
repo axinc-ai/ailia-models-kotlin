@@ -518,7 +518,9 @@ class MainActivity : AppCompatActivity() {
         try {
             if (ailiaEnvironments == null) {
                 Ailia.SetTemporaryCachePath(cacheDir.absolutePath)
-                ailiaEnvironments = AiliaModel.getEnvironments()
+                ailiaEnvironments = AiliaModel.getEnvironments().filter {
+                    isSelectableAiliaEnvironment(it.name)
+                }
             }
             val envNames = ailiaEnvironments!!.map { "${it.name} (id:${it.id})" }.toTypedArray()
             val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, envNames)
@@ -3806,3 +3808,7 @@ internal fun formatDownloadProgress(
     return listOfNotNull("Downloading", fileName?.takeIf { it.isNotBlank() }, sizeText)
         .joinToString(" ")
 }
+
+/** QNN-HTPは公開し、現在使用しないQNN-GPUだけを環境選択から除外する。 */
+internal fun isSelectableAiliaEnvironment(name: String): Boolean =
+    !(name.contains("QNN", ignoreCase = true) && name.contains("GPU", ignoreCase = true))
