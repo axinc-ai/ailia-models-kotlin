@@ -80,7 +80,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var speakerProfileSpinner: Spinner
     private lateinit var speakerInputModeRadioGroup: RadioGroup
     private lateinit var speakerVerifyButton: Button
-    private lateinit var speakerReverifyButton: Button
+    private lateinit var speakerInputWavNameTextView: TextView
+    private lateinit var speakerRecordedActionButton: Button
     private lateinit var speakerRegisterButton: Button
     private lateinit var speakerReferencePlayButton: Button
     private lateinit var speakerWaveformView: WaveformView
@@ -167,7 +168,6 @@ class MainActivity : AppCompatActivity() {
         val name: String,
         val embedding: FloatArray? = null,
         val presetRawResource: Int? = null,
-        val presetInputRawResource: Int? = null,
         val profileId: String? = null,
     )
 
@@ -318,7 +318,8 @@ class MainActivity : AppCompatActivity() {
         speakerProfileSpinner = findViewById(R.id.speakerProfileSpinner)
         speakerInputModeRadioGroup = findViewById(R.id.speakerInputModeRadioGroup)
         speakerVerifyButton = findViewById(R.id.speakerVerifyButton)
-        speakerReverifyButton = findViewById(R.id.speakerReverifyButton)
+        speakerInputWavNameTextView = findViewById(R.id.speakerInputWavNameTextView)
+        speakerRecordedActionButton = findViewById(R.id.speakerRecordedActionButton)
         speakerRegisterButton = findViewById(R.id.speakerRegisterButton)
         speakerReferencePlayButton = findViewById(R.id.speakerReferencePlayButton)
         speakerWaveformView = findViewById(R.id.speakerWaveformView)
@@ -1005,7 +1006,8 @@ class MainActivity : AppCompatActivity() {
         speakerProfileSpinner,
         speakerInputModeRadioGroup,
         speakerVerifyButton,
-        speakerReverifyButton,
+        speakerInputWavNameTextView,
+        speakerRecordedActionButton,
         speakerRegisterButton,
         speakerReferencePlayButton,
         speakerWaveformView,
@@ -1103,12 +1105,13 @@ class MainActivity : AppCompatActivity() {
         )
 
         val speakerVerificationViews = speakerAudioViews + setOf<View>(
-            speakerReverifyButton,
+            speakerInputWavNameTextView,
+            speakerRecordedActionButton,
             speakerInputPlayButton,
         )
 
         val voiceFilterViews = speakerAudioViews + setOf<View>(
-            speakerReverifyButton,
+            speakerRecordedActionButton,
             voiceFilterInputWaveformLabel,
             voiceFilterPlayInputButton,
             voiceFilterOutputWaveformLabel,
@@ -1660,7 +1663,7 @@ class MainActivity : AppCompatActivity() {
             speakerInputModeRadioGroup.getChildAt(index).isEnabled = enabled
         }
         speakerVerifyButton.isEnabled = enabled
-        speakerReverifyButton.isEnabled = enabled && when (currentAlgorithm) {
+        speakerRecordedActionButton.isEnabled = enabled && when (currentAlgorithm) {
             AlgorithmType.SPEAKER_VERIFICATION ->
                 speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerMicRadioButton &&
                     lastSpeakerMicAudio != null
@@ -2205,7 +2208,7 @@ class MainActivity : AppCompatActivity() {
         speakerVerifyButton.setOnClickListener {
             if (weSpeakerSample.isRecording) {
                 if (speakerRecordingPurpose == SpeakerRecordingPurpose.VERIFY) {
-                    speakerStatusTextView.text = "Status: Separating speech with Silero VAD v6..."
+                    speakerStatusTextView.text = "Status: Finishing recording..."
                     speakerVerifyButton.isEnabled = false
                     weSpeakerSample.stopRecording()
                 }
@@ -2218,7 +2221,7 @@ class MainActivity : AppCompatActivity() {
                 ensureWeSpeakerReady { verifySelectedSpeakerWav() }
             }
         }
-        speakerReverifyButton.setOnClickListener {
+        speakerRecordedActionButton.setOnClickListener {
             if (weSpeakerSample.isRecording || isDownloadingModel.get()) {
                 return@setOnClickListener
             }
@@ -2269,13 +2272,11 @@ class MainActivity : AppCompatActivity() {
                 name = "ailia-models 00001_spk1 (preset)",
                 embedding = presetSpeakerEmbeddings[R.raw.wespeaker_00001_spk1],
                 presetRawResource = R.raw.wespeaker_00001_spk1,
-                presetInputRawResource = R.raw.wespeaker_00024_spk1,
             ),
             SpeakerReference(
                 name = "ailia-models 00003_spk2 (preset)",
                 embedding = presetSpeakerEmbeddings[R.raw.wespeaker_00003_spk2],
                 presetRawResource = R.raw.wespeaker_00003_spk2,
-                presetInputRawResource = R.raw.wespeaker_00010_spk2,
             ),
         ) + customProfiles.map { profile ->
             SpeakerReference(
@@ -2301,11 +2302,14 @@ class MainActivity : AppCompatActivity() {
         if (currentAlgorithm != AlgorithmType.SPEAKER_VERIFICATION) return
         val wavMode = speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton
         if (!weSpeakerSample.isRecording) {
-            speakerVerifyButton.text = if (wavMode) "Verify Wav" else "Record and Verify"
+            speakerVerifyButton.text = if (wavMode) "Verify Wav" else "Record"
         }
-        val canReverify = !wavMode && lastSpeakerMicAudio != null && !weSpeakerSample.isRecording
-        speakerReverifyButton.visibility = if (canReverify) View.VISIBLE else View.GONE
-        speakerReverifyButton.isEnabled = canReverify && !isDownloadingModel.get()
+        speakerInputWavNameTextView.visibility = if (wavMode) View.VISIBLE else View.GONE
+        val canVerifyRecorded =
+            !wavMode && lastSpeakerMicAudio != null && !weSpeakerSample.isRecording
+        speakerRecordedActionButton.visibility = if (wavMode) View.GONE else View.VISIBLE
+        speakerRecordedActionButton.text = "Verify"
+        speakerRecordedActionButton.isEnabled = canVerifyRecorded && !isDownloadingModel.get()
         updateSpeakerPlaybackButtons()
     }
 
@@ -2402,9 +2406,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadSpeakerInputAudio(): AudioUtil.WavFileData {
         return if (speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton) {
-            val reference = speakerReferences.getOrNull(speakerProfileSpinner.selectedItemPosition)
-            val inputResource = reference?.presetInputRawResource ?: R.raw.wespeaker_00024_spk1
-            AudioUtil().loadRawAudio(resources.openRawResource(inputResource))
+            AudioUtil().loadRawAudio(resources.openRawResource(R.raw.wespeaker_00024_spk1))
         } else {
             AudioUtil.WavFileData(
                 sampleRate = lastSpeakerMicSampleRate,
@@ -2552,6 +2554,10 @@ class MainActivity : AppCompatActivity() {
         pendingAudioAction = null
         speakerRecordingPurpose = purpose
         stopSpeakerPlayback(status = null, restoreWaveform = false)
+        if (purpose == SpeakerRecordingPurpose.VERIFY) {
+            lastSpeakerMicAudio = null
+            speakerResultTextView.text = "Distance: --"
+        }
         speakerWaveformView.clear()
         val started = weSpeakerSample.startRecording(object : AiliaWeSpeakerSample.RecordingListener {
             override fun onWaveform(samples: FloatArray, sampleRate: Int) {
@@ -2566,7 +2572,7 @@ class MainActivity : AppCompatActivity() {
                         lastSpeakerMicSampleRate = sampleRate
                         speakerWaveformView.showAudio(audio)
                         resetSpeakerRecordingUi()
-                        performSpeakerVerification(audio, 1, sampleRate)
+                        speakerStatusTextView.text = "Status: Recording complete. Press Verify"
                     }
                     SpeakerRecordingPurpose.ENROLL -> {
                         runOnUiThreadIfActive {
@@ -2589,7 +2595,8 @@ class MainActivity : AppCompatActivity() {
             // Keep only the active Stop button enabled so a model/environment switch
             // cannot release native objects while AudioRecord is still producing data.
             setModelOperationControlsEnabled(false)
-            speakerReverifyButton.visibility = View.GONE
+            speakerRecordedActionButton.visibility = View.VISIBLE
+            speakerRecordedActionButton.isEnabled = false
             speakerStatusTextView.text = "Status: Recording (press Stop when finished)"
             if (purpose == SpeakerRecordingPurpose.VERIFY) {
                 speakerVerifyButton.isEnabled = true
@@ -2693,7 +2700,7 @@ class MainActivity : AppCompatActivity() {
         speakerVerifyButton.setOnClickListener {
             if (voiceFilterSample.isRecording) {
                 if (voiceFilterRecordingPurpose == VoiceFilterRecordingPurpose.FILTER) {
-                    speakerStatusTextView.text = "Status: Filtering recorded audio..."
+                    speakerStatusTextView.text = "Status: Finishing recording..."
                     speakerVerifyButton.isEnabled = false
                     voiceFilterSample.stopRecording()
                 }
@@ -2706,7 +2713,7 @@ class MainActivity : AppCompatActivity() {
                 ensureVoiceFilterReady { filterSelectedVoiceFilterWav() }
             }
         }
-        speakerReverifyButton.setOnClickListener {
+        speakerRecordedActionButton.setOnClickListener {
             if (voiceFilterSample.isRecording || isDownloadingModel.get()) {
                 return@setOnClickListener
             }
@@ -2766,16 +2773,14 @@ class MainActivity : AppCompatActivity() {
         val customProfiles = voiceFilterProfileStore.list()
         voiceFilterReferences = listOf(
             SpeakerReference(
-                name = "ailia-models ref-voice (preset)",
+                name = "ref-voice (preset)",
                 embedding = presetVoiceFilterEmbeddings[R.raw.voicefilter_ref_voice],
                 presetRawResource = R.raw.voicefilter_ref_voice,
             ),
             SpeakerReference(
-                name = "ailia-models reference_audio_captured_by_ax (preset)",
-                embedding = presetVoiceFilterEmbeddings[
-                    R.raw.voicefilter_reference_audio_captured_by_ax
-                ],
-                presetRawResource = R.raw.voicefilter_reference_audio_captured_by_ax,
+                name = "ref-ailia (preset)",
+                embedding = presetVoiceFilterEmbeddings[R.raw.voicefilter_ref_ailia],
+                presetRawResource = R.raw.voicefilter_ref_ailia,
             ),
         ) + customProfiles.map { profile ->
             SpeakerReference(
@@ -2801,11 +2806,13 @@ class MainActivity : AppCompatActivity() {
         if (currentAlgorithm != AlgorithmType.VOICE_FILTER) return
         val wavMode = speakerInputModeRadioGroup.checkedRadioButtonId == R.id.speakerWavRadioButton
         if (!voiceFilterSample.isRecording) {
-            speakerVerifyButton.text = if (wavMode) "Filter Wav" else "Record and Filter"
+            speakerVerifyButton.text = if (wavMode) "Filter Wav" else "Record"
         }
-        val canRunAgain = !wavMode && lastVoiceFilterMicAudio != null && !voiceFilterSample.isRecording
-        speakerReverifyButton.visibility = if (canRunAgain) View.VISIBLE else View.GONE
-        speakerReverifyButton.isEnabled = canRunAgain && !isDownloadingModel.get()
+        val canFilterRecorded =
+            !wavMode && lastVoiceFilterMicAudio != null && !voiceFilterSample.isRecording
+        speakerRecordedActionButton.visibility = if (wavMode) View.GONE else View.VISIBLE
+        speakerRecordedActionButton.text = "Filter"
+        speakerRecordedActionButton.isEnabled = canFilterRecorded && !isDownloadingModel.get()
         updateVoiceFilterPlaybackButtons()
     }
 
@@ -2964,6 +2971,10 @@ class MainActivity : AppCompatActivity() {
         pendingAudioAction = null
         voiceFilterRecordingPurpose = purpose
         clearVoiceFilterResult()
+        if (purpose == VoiceFilterRecordingPurpose.FILTER) {
+            lastVoiceFilterMicAudio = null
+            speakerWaveformView.clear()
+        }
         val started = voiceFilterSample.startRecording(object : AiliaVoiceFilterSample.RecordingListener {
             override fun onWaveform(samples: FloatArray, sampleRate: Int) {
                 val blocks = WaveformView.peakBlocks(samples, samples.size, sampleRate)
@@ -2977,7 +2988,7 @@ class MainActivity : AppCompatActivity() {
                         lastVoiceFilterMicSampleRate = sampleRate
                         speakerWaveformView.showAudio(audio)
                         resetVoiceFilterRecordingUi()
-                        performVoiceFiltering(audio, 1, sampleRate, applyVad = true)
+                        speakerStatusTextView.text = "Status: Recording complete. Press Filter"
                     }
                     VoiceFilterRecordingPurpose.ENROLL -> runOnUiThreadIfActive {
                         val name = "My Voice ${voiceFilterProfileStore.list().size + 1}"
@@ -2996,7 +3007,8 @@ class MainActivity : AppCompatActivity() {
         })
         if (started) {
             setModelOperationControlsEnabled(false)
-            speakerReverifyButton.visibility = View.GONE
+            speakerRecordedActionButton.visibility = View.VISIBLE
+            speakerRecordedActionButton.isEnabled = false
             speakerStatusTextView.text = "Status: Recording (press Stop when finished)"
             if (purpose == VoiceFilterRecordingPurpose.FILTER) {
                 speakerVerifyButton.isEnabled = true
