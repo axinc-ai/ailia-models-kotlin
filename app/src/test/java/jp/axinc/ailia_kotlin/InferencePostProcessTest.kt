@@ -74,6 +74,15 @@ class InferencePostProcessTest {
     }
 
     @Test
+    fun classificationInputQuantizationPreservesSignedRange() {
+        val scale = 2f / 255f
+
+        assertEquals((-128).toByte(), quantizeClassificationInput(-1f, scale, -1, signed = true))
+        assertEquals((-1).toByte(), quantizeClassificationInput(0f, scale, -1, signed = true))
+        assertEquals(126.toByte(), quantizeClassificationInput(1f, scale, -1, signed = true))
+    }
+
+    @Test
     fun vitPreprocessingConvertsRgbaToNormalizedRgbChw() {
         val input = preprocessVitRgba(
             img = byteArrayOf(0, 127, 0xFF.toByte(), 0xFF.toByte()),
