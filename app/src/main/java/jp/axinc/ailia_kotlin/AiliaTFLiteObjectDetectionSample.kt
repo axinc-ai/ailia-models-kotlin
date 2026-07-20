@@ -5,12 +5,19 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.util.Log
 import axip.ailia_tflite.AiliaTFLite
+import java.io.File
 import kotlin.math.exp
 import kotlin.math.pow
 
-class AiliaTFLiteObjectDetectionSample {
+class AiliaTFLiteObjectDetectionSample(private val modelDirectory: File) {
     companion object {
         private const val TAG = "AILIA_Main"
+        private val MODEL_SPEC = ModelFileSpec(
+            url = "https://storage.googleapis.com/ailia-models-tflite/yolox/yolox_s_full_integer_quant.opt.tflite",
+            fileName = "yolox_s_full_integer_quant.opt.tflite",
+            expectedSize = 9_376_112,
+            sha256 = "98ff315bff494938cbbb14210db40c64a78881635cfc5ab85761359b5ed9e333",
+        )
     }
 
     private var tflite: AiliaTFLite? = null
@@ -23,6 +30,29 @@ class AiliaTFLiteObjectDetectionSample {
     private var quantScale: Float = 1.0f
     private var quantZeroPoint: Long = 0L
     private var lastDetectionResults: List<DetectionResult> = emptyList()
+
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
+        return try {
+            check(ModelDownloader.downloadFile(modelDirectory, MODEL_SPEC, listener) != null)
+            listener?.onComplete()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Model Download Failed: ${MODEL_SPEC.fileName}", e)
+            listener?.onError(e.message ?: "Download failed")
+            false
+        }
+    }
+
+    fun initializeFromFile(
+        env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE,
+    ): Boolean {
+        return try {
+            initializeObjectDetection(File(modelDirectory, MODEL_SPEC.fileName).readBytes(), env)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read model file: ${e.message}", e)
+            false
+        }
+    }
 
     private fun loadImage(inputTensorType: Int, inputShape: IntArray, bitmap : Bitmap): ByteArray {
         Log.i(TAG, ""+inputShape[0].toString()+" "+inputShape[1].toString()+ " "+inputShape[2].toString()+ " "+inputShape[3].toString())

@@ -5,7 +5,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.util.Log
-import android.widget.ImageView
 import axip.ailia.Ailia
 import axip.ailia.AiliaEnvironment
 import axip.ailia.AiliaImageFormat
@@ -13,18 +12,30 @@ import axip.ailia.AiliaModel
 import axip.ailia.AiliaPoseEstimatorAlgorithm
 import axip.ailia.AiliaPoseEstimatorModel
 import axip.ailia.AiliaPoseEstimatorObjectPose
-import java.io.ByteArrayOutputStream
-import java.io.DataOutputStream
-import java.io.IOException
-import java.nio.ByteBuffer
+import java.io.File
 
-class AiliaPoseEstimatorSample {
+class AiliaPoseEstimatorSample(private val modelDirectory: File) {
     private var ailia: AiliaModel? = null
     private var poseEstimator: AiliaPoseEstimatorModel? = null
     private var isInitialized = false
 
     companion object {
         init { System.loadLibrary("ailia") }
+        private const val REMOTE_PATH =
+            "https://storage.googleapis.com/ailia-models/lightweight-human-pose-estimation/"
+        private val PROTO_SPEC = ModelFileSpec(
+            url = "${REMOTE_PATH}lightweight-human-pose-estimation.opt.onnx.prototxt",
+            fileName = "lightweight-human-pose-estimation.opt.onnx.prototxt",
+            expectedSize = 92_863,
+            sha256 = "bf87750506e3c57e294a7743623e344b29b7de1db07b0246c4c0e5669fa83b1e",
+        )
+        private val MODEL_SPEC = ModelFileSpec(
+            url = "${REMOTE_PATH}lightweight-human-pose-estimation.opt.onnx",
+            fileName = "lightweight-human-pose-estimation.opt.onnx",
+            expectedSize = 16_347_537,
+            sha256 = "4c4c01ae393d67e23658943c2aa6842d84a334a5406ac1dcffccf13395d4692c",
+        )
+
         // Python版(lightweight-human-pose-estimation.py)と同じ閾値。
         // スコアがこれ以下のキーポイント/ラインは描画しない
         private const val KEYPOINT_THRESHOLD = 0.3f
@@ -83,7 +94,20 @@ class AiliaPoseEstimatorSample {
         return selectedEnv;
     }
 
-    fun initializePoseEstimator(envId: Int, proto: ByteArray?, model: ByteArray?): Boolean {
+    fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
+        return try {
+            check(ModelDownloader.downloadFile(modelDirectory, PROTO_SPEC, listener) != null)
+            check(ModelDownloader.downloadFile(modelDirectory, MODEL_SPEC, listener) != null)
+            listener?.onComplete()
+            true
+        } catch (e: Exception) {
+            Log.e("AILIA_Error", "Pose estimator model download failed", e)
+            listener?.onError(e.message ?: "Download failed")
+            false
+        }
+    }
+
+    fun initializePoseEstimator(envId: Int): Boolean {
         return try {
             if (isInitialized) {
                 releasePoseEstimator()
@@ -94,8 +118,8 @@ class AiliaPoseEstimatorSample {
             ailia = AiliaModel(
                 envId,
                 Ailia.MULTITHREAD_AUTO,
-                proto,
-                model
+                File(modelDirectory, PROTO_SPEC.fileName).absolutePath,
+                File(modelDirectory, MODEL_SPEC.fileName).absolutePath,
             )
             poseEstimator = AiliaPoseEstimatorModel(ailia!!.handle, AiliaPoseEstimatorAlgorithm.LW_HUMAN_POSE)
             isInitialized = true

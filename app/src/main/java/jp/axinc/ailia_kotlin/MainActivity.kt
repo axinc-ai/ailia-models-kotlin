@@ -103,8 +103,10 @@ class MainActivity : AppCompatActivity() {
     private var speechIntermediateText: String? = null
 
     private val modelDirectory by lazy { ModelDownloader.modelDirectory(this) }
-    private val poseEstimatorSample = AiliaPoseEstimatorSample()
-    private val objectDetectionSample = AiliaTFLiteObjectDetectionSample()
+    private val poseEstimatorSample by lazy { AiliaPoseEstimatorSample(modelDirectory) }
+    private val objectDetectionSample by lazy {
+        AiliaTFLiteObjectDetectionSample(modelDirectory)
+    }
     private val classificationSample by lazy { AiliaTFLiteClassificationSample(modelDirectory) }
     private val miniLMv2Sample by lazy { AiliaMiniLMv2Sample(modelDirectory) }
     private val trackerSample = AiliaTrackerSample()
@@ -1428,10 +1430,12 @@ class MainActivity : AppCompatActivity() {
         try {
             when (currentAlgorithm) {
                 AlgorithmType.POSE_ESTIMATION -> {
-                    val proto: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_proto)
-                    val model: ByteArray? = loadRawFile(R.raw.lightweight_human_pose_weight)
-                    isInitialized =
-                        poseEstimatorSample.initializePoseEstimator(selectedEnvId, proto, model)
+                    initializeDownloadedModelAsync(
+                        logName = "Lightweight Human Pose",
+                        download = { poseEstimatorSample.downloadModel(it) },
+                        initialize = { poseEstimatorSample.initializePoseEstimator(selectedEnvId) },
+                    )
+                    return
                 }
 
                 AlgorithmType.OBJECT_DETECTION -> {
@@ -1452,12 +1456,14 @@ class MainActivity : AppCompatActivity() {
                         )
                         return
                     } else {
-                        //val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
-                        val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_s)
-                        isInitialized = objectDetectionSample.initializeObjectDetection(
-                            yoloxModel,
-                            env = selectedEnvId
+                        initializeDownloadedModelAsync(
+                            logName = "TFLite YOLOX-S",
+                            download = { objectDetectionSample.downloadModel(it) },
+                            initialize = {
+                                objectDetectionSample.initializeFromFile(env = selectedEnvId)
+                            },
                         )
+                        return
                     }
                 }
 
@@ -1471,21 +1477,15 @@ class MainActivity : AppCompatActivity() {
                             }
                         )
                         return
-                    } else if (classificationSample.modelType == TFLiteClassificationModelType.RESNET50) {
+                    } else {
                         initializeDownloadedModelAsync(
-                            logName = "TFLite ResNet50",
+                            logName = "TFLite ${classificationSample.modelType.displayName}",
                             download = { classificationSample.downloadModel(it) },
                             initialize = {
                                 classificationSample.initializeFromFile(env = selectedEnvId)
-                            }
+                            },
                         )
                         return
-                    } else {
-                        val classificationModel: ByteArray? = loadRawFile(R.raw.mobilenetv2)
-                        isInitialized = classificationSample.initializeClassification(
-                            classificationModel,
-                            env = selectedEnvId
-                        )
                     }
                 }
 
@@ -1512,15 +1512,16 @@ class MainActivity : AppCompatActivity() {
                         )
                         return
                     } else {
-                        //val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_tiny)
-                        val yoloxModel: ByteArray? = loadRawFile(R.raw.yolox_s)
-                        if (objectDetectionSample.initializeObjectDetection(
-                                yoloxModel,
-                                env = selectedEnvId
-                            )
-                        ) {
-                            isInitialized = trackerSample.initializeTracker()
-                        }
+                        initializeDownloadedModelAsync(
+                            logName = "TFLite Tracking",
+                            download = { objectDetectionSample.downloadModel(it) },
+                            initialize = {
+                                val detectorSuccess =
+                                    objectDetectionSample.initializeFromFile(env = selectedEnvId)
+                                detectorSuccess && trackerSample.initializeTracker()
+                            },
+                        )
+                        return
                     }
                 }
 
@@ -1557,12 +1558,6 @@ class MainActivity : AppCompatActivity() {
                     // モデルダウンロードはSend押下時(initialize*Async)まで遅延する
                     return
                 }
-            }
-
-            if (isInitialized) {
-                Log.i("AILIA_Main", "Algorithm ${currentAlgorithm.name} initialized successfully")
-            } else {
-                Log.e("AILIA_Error", "Failed to initialize algorithm ${currentAlgorithm.name}")
             }
         } catch (e: Exception) {
             Log.e(
@@ -3799,25 +3794,6 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    @Throws(IOException::class)
-    fun inputStreamToByteArray(`in`: InputStream): ByteArray? {
-        val bout = ByteArrayOutputStream()
-        BufferedOutputStream(bout).use { out ->
-            val buf = ByteArray(128)
-            while (true) {
-                val count = `in`.read(buf)
-                if (count <= 0) break
-                out.write(buf, 0, count)
-            }
-        }
-        return bout.toByteArray()
-    }
-
-    @Throws(IOException::class)
-    fun loadRawFile(resourceId: Int): ByteArray? {
-        val resources = this.resources
-        resources.openRawResource(resourceId).use { `in` -> return inputStreamToByteArray(`in`) }
-    }
 }
 
 internal fun formatDownloadProgress(bytesDownloaded: Long, totalBytes: Long): String {

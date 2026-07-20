@@ -22,8 +22,7 @@ import java.util.EnumSet
  * Integration tests for ONNX (ailia SDK) and TFLite inference.
  * Tests ObjectDetection, Classification, and Tracking with both runtimes.
  *
- * TFLite tests use raw resources bundled in the app.
- * ONNX tests download models at runtime and use ailia SDK APIs with byte array loading.
+ * Model files are downloaded at runtime and cached in app-specific storage.
  */
 @RunWith(AndroidJUnit4::class)
 class OnnxTFLiteInstrumentedTest {
@@ -59,13 +58,24 @@ class OnnxTFLiteInstrumentedTest {
         return file!!.absolutePath
     }
 
-    // =====================================================================
-    // Helper: Load raw resource as ByteArray
-    // =====================================================================
-    private fun loadRawResource(resName: String): ByteArray {
-        val resId = context.resources.getIdentifier(resName, "raw", context.packageName)
-        assertTrue("Resource '$resName' should exist", resId != 0)
-        return context.resources.openRawResource(resId).use { it.readBytes() }
+    private fun initializedTFLiteObjectDetectionSample(): AiliaTFLiteObjectDetectionSample {
+        val sample = AiliaTFLiteObjectDetectionSample(modelDirectory())
+        assertTrue("TFLite ObjectDetection model should download", sample.downloadModel())
+        assertTrue(
+            "TFLite ObjectDetection should initialize",
+            sample.initializeFromFile(AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE),
+        )
+        return sample
+    }
+
+    private fun initializedTFLiteClassificationSample(): AiliaTFLiteClassificationSample {
+        val sample = AiliaTFLiteClassificationSample(modelDirectory())
+        assertTrue("TFLite Classification model should download", sample.downloadModel())
+        assertTrue(
+            "TFLite Classification should initialize",
+            sample.initializeFromFile(AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE),
+        )
+        return sample
     }
 
     // =====================================================================
@@ -122,11 +132,7 @@ class OnnxTFLiteInstrumentedTest {
     fun testTFLiteObjectDetection() {
         Log.i(TAG, "=== Test TFLite ObjectDetection ===")
 
-        val modelData = loadRawResource("yolox_s")
-        val sample = AiliaTFLiteObjectDetectionSample()
-
-        val initialized = sample.initializeObjectDetection(modelData, AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE)
-        assertTrue("TFLite ObjectDetection should initialize", initialized)
+        val sample = initializedTFLiteObjectDetectionSample()
 
         try {
             val personBmp = loadPersonBitmap()
@@ -228,11 +234,7 @@ class OnnxTFLiteInstrumentedTest {
     fun testTFLiteClassification() {
         Log.i(TAG, "=== Test TFLite Classification ===")
 
-        val modelData = loadRawResource("mobilenetv2")
-        val sample = AiliaTFLiteClassificationSample(modelDirectory())
-
-        val initialized = sample.initializeClassification(modelData, AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE)
-        assertTrue("TFLite Classification should initialize", initialized)
+        val sample = initializedTFLiteClassificationSample()
 
         try {
             val personBmp = loadPersonBitmap()
@@ -309,12 +311,8 @@ class OnnxTFLiteInstrumentedTest {
     fun testTFLiteTracking() {
         Log.i(TAG, "=== Test TFLite Tracking ===")
 
-        val modelData = loadRawResource("yolox_s")
-        val objDetSample = AiliaTFLiteObjectDetectionSample()
+        val objDetSample = initializedTFLiteObjectDetectionSample()
         val trackerSample = AiliaTrackerSample()
-
-        val detInitialized = objDetSample.initializeObjectDetection(modelData, AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE)
-        assertTrue("TFLite ObjectDetection for Tracking should initialize", detInitialized)
 
         val trackerInitialized = trackerSample.initializeTracker()
         assertTrue("Tracker should initialize", trackerInitialized)
@@ -425,10 +423,7 @@ class OnnxTFLiteInstrumentedTest {
         Log.i(TAG, "=== Test ObjectDetection Cross-Runtime Comparison ===")
 
         // --- TFLite ---
-        val tfliteModelData = loadRawResource("yolox_s")
-        val tfliteSample = AiliaTFLiteObjectDetectionSample()
-        assertTrue("TFLite should initialize",
-            tfliteSample.initializeObjectDetection(tfliteModelData, AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE))
+        val tfliteSample = initializedTFLiteObjectDetectionSample()
 
         // --- ONNX ---
         val protoPath = downloadModel(ONNX_YOLOX_PROTO_URL, ONNX_YOLOX_PROTO_FILE)
@@ -495,10 +490,7 @@ class OnnxTFLiteInstrumentedTest {
         Log.i(TAG, "=== Test Classification Cross-Runtime Comparison ===")
 
         // --- TFLite ---
-        val tfliteModelData = loadRawResource("mobilenetv2")
-        val tfliteSample = AiliaTFLiteClassificationSample(modelDirectory())
-        assertTrue("TFLite Classification should initialize",
-            tfliteSample.initializeClassification(tfliteModelData, AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE))
+        val tfliteSample = initializedTFLiteClassificationSample()
 
         // --- ONNX ---
         val protoPath = downloadModel(ONNX_MOBILENET_PROTO_URL, ONNX_MOBILENET_PROTO_FILE)
