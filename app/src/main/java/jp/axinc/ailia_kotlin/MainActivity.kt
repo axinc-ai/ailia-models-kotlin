@@ -229,9 +229,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        init {
+            System.loadLibrary("ailia")
+        }
+
         private const val REQUEST_CODE_CAMERA_PERMISSION = 10
         private const val REQUEST_CODE_AUDIO_PERMISSION = 11
-
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -3439,32 +3442,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // TOKENIZE (MiniLMv2) is async download + init
-        if (currentAlgorithm == AlgorithmType.TOKENIZE) {
-            if (!isInitialized) {
-                initializeAilia()
-                return
-            }
-        }
-
-        // 非同期モデルダウンロードが必要なモード
-        if (selectedRuntime == "ONNX" && (currentAlgorithm == AlgorithmType.OBJECT_DETECTION ||
-                    currentAlgorithm == AlgorithmType.CLASSIFICATION ||
-                    currentAlgorithm == AlgorithmType.BACKGROUND_REMOVAL ||
-                    currentAlgorithm == AlgorithmType.TRACKING)) {
-            if (!isInitialized) {
-                initializeAilia()
-                return
-            }
-        }
-
-        // TFLiteのResNet50もダウンロードが必要なため非同期で初期化する
-        if (currentAlgorithm == AlgorithmType.CLASSIFICATION && selectedRuntime == "TFLite" &&
-            classificationSample.modelType == TFLiteClassificationModelType.RESNET50) {
-            if (!isInitialized) {
-                initializeAilia()
-                return
-            }
+        // 画像系とTokenizerのモデルはすべて非同期でダウンロード・初期化する。
+        // UIスレッドから初期化を開始してここで戻り、完了コールバックから推論へ進む。
+        // 推論Executor内で初期化を予約すると、予約直後の未初期化状態を失敗と誤判定する。
+        if (needsVisionRunButton() && !isInitialized) {
+            initializeAilia()
+            return
         }
 
         // TEXT_TO_SPEECHはGenerate押下時にダウンロード+初期化する
@@ -3507,13 +3490,7 @@ class MainActivity : AppCompatActivity() {
     private fun runImageModeInference(tokenizerInput: String) {
         try {
             if (!isInitialized) {
-                initializeAilia()
-            }
-
-            if (!isInitialized) {
-                runOnUiThreadIfActive {
-                    processingTimeTextView.text = "Initialization failed"
-                }
+                Log.w("AILIA_Main", "Skipping image inference because initialization is pending")
                 return
             }
 
