@@ -7,19 +7,27 @@ import java.io.File
 
 /**
  * TFLiteの画像分類モデル定義。
- * modelUrlがnullの場合はraw resourceのMobileNetV2再キャリブレーション版を使用する。
- * ResNet50はailia-models-tfliteのint8量子化モデル(recalibrated)を使用する。
+ * ailia-models-tfliteのint8量子化モデル(recalibrated)を使用する。
  */
 enum class TFLiteClassificationModelType(
     val displayName: String,
-    val modelUrl: String?,
-    val modelFile: String?,
+    val modelSpec: ModelFileSpec,
 ) {
-    MOBILENETV2("MobileNetV2", null, null),
+    MOBILENETV2(
+        "MobileNetV2",
+        ModelFileSpec(
+            url = "https://storage.googleapis.com/ailia-models-tflite/mobilenetv2/mobilenetv2_quant_recalib.tflite",
+            fileName = "mobilenetv2_quant_recalib.tflite",
+            expectedSize = 3_993_520,
+            sha256 = "d7386e7a80137328ac80603c1f76ae9d02ea2564d64a1a539729fa5985936f7c",
+        ),
+    ),
     RESNET50(
         "ResNet50",
-        "https://storage.googleapis.com/ailia-models-tflite/resnet50/resnet50_quant_recalib.tflite",
-        "resnet50_quant_recalib.tflite"
+        ModelFileSpec(
+            url = "https://storage.googleapis.com/ailia-models-tflite/resnet50/resnet50_quant_recalib.tflite",
+            fileName = "resnet50_quant_recalib.tflite",
+        ),
     ),
 }
 
@@ -30,16 +38,15 @@ class AiliaTFLiteClassificationSample(private val modelDirectory: File) {
 
     var modelType: TFLiteClassificationModelType = TFLiteClassificationModelType.MOBILENETV2
 
-    /** modelUrlを持つモデル(ResNet50)をmodelDirへダウンロードする */
+    /** 選択中のモデルをmodelDirへダウンロードする。 */
     fun downloadModel(listener: ModelDownloadListener? = null): Boolean {
-        val url = modelType.modelUrl ?: return true
-        val fileName = modelType.modelFile!!
+        val spec = modelType.modelSpec
         return try {
-            check(ModelDownloader.downloadFile(modelDirectory, ModelFileSpec(url, fileName), listener) != null)
+            check(ModelDownloader.downloadFile(modelDirectory, spec, listener) != null)
             listener?.onComplete()
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Model Download Failed: $fileName", e)
+            Log.e(TAG, "Model Download Failed: ${spec.fileName}", e)
             listener?.onError(e.message ?: "Download failed")
             false
         }
@@ -47,7 +54,7 @@ class AiliaTFLiteClassificationSample(private val modelDirectory: File) {
 
     /** ダウンロード済みモデルファイルから初期化する */
     fun initializeFromFile(env: Int = AiliaTFLite.AILIA_TFLITE_ENV_REFERENCE): Boolean {
-        val fileName = modelType.modelFile ?: return false
+        val fileName = modelType.modelSpec.fileName
         return try {
             val modelData = File(modelDirectory, fileName).readBytes()
             initializeClassification(modelData, env)
