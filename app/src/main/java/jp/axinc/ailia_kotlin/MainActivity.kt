@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var trackingResultTextView: TextView
     private lateinit var voiceInputEditText: EditText
     private lateinit var voiceEnvSpinner: Spinner
+    private lateinit var speechEnvSpinner: Spinner
     private lateinit var voiceReplayButton: Button
     private lateinit var voiceStatusTextView: TextView
     private lateinit var voiceGenerateButton: Button
@@ -293,6 +294,7 @@ class MainActivity : AppCompatActivity() {
         trackingResultTextView = findViewById(R.id.trackingResultTextView)
         voiceInputEditText = findViewById(R.id.voiceInputEditText)
         voiceEnvSpinner = findViewById(R.id.voiceEnvSpinner)
+        speechEnvSpinner = findViewById(R.id.speechEnvSpinner)
         voiceReplayButton = findViewById(R.id.voiceReplayButton)
         voiceStatusTextView = findViewById(R.id.voiceStatusTextView)
         voiceGenerateButton = findViewById(R.id.voiceGenerateButton)
@@ -588,11 +590,16 @@ class MainActivity : AppCompatActivity() {
                 setupOnnxEnvSpinner(useBlas = false)
             }
 
-            AlgorithmType.SPEECH_TO_TEXT,
             AlgorithmType.SPEAKER_VERIFICATION,
             AlgorithmType.VOICE_FILTER,
             AlgorithmType.TOKENIZE -> {
                 setupOnnxEnvSpinner(useBlas = true)
+            }
+
+            AlgorithmType.SPEECH_TO_TEXT -> {
+                // Speech2Textのバックエンド選択はRun/Recordボタンの右側に表示する
+                envSpinner.visibility = View.GONE
+                setupOnnxEnvSpinner(useBlas = true, target = speechEnvSpinner)
             }
 
             AlgorithmType.TEXT_TO_SPEECH -> {
@@ -1021,6 +1028,7 @@ class MainActivity : AppCompatActivity() {
         liveModeCheckBox,
         speechRunButton,
         micRecordButton,
+        speechEnvSpinner,
         waveformView,
         waveformInfoTextView,
         voiceWaveformView,
@@ -1070,6 +1078,7 @@ class MainActivity : AppCompatActivity() {
             transcriptTextView,
             speechModeRadioGroup,
             diarizationCheckBox,
+            speechEnvSpinner,
         )
         if (isMicMode) {
             speechViews.addAll(
@@ -1677,6 +1686,7 @@ class MainActivity : AppCompatActivity() {
         modelSpinner.isEnabled = enabled
         envSpinner.isEnabled = enabled
         voiceEnvSpinner.isEnabled = enabled
+        speechEnvSpinner.isEnabled = enabled
         modeRadioGroup.isEnabled = enabled
         for (index in 0 until modeRadioGroup.childCount) {
             modeRadioGroup.getChildAt(index).isEnabled = enabled
