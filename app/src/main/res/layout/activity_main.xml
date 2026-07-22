@@ -233,21 +233,39 @@
                 android:textColor="?android:attr/textColorPrimary"
                 android:visibility="gone" />
 
-            <Button
-                android:id="@+id/speechRunButton"
-                android:layout_width="wrap_content"
+            <!-- Run/Recordボタンとバックエンド選択を同じ高さで横並びにする -->
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
-                android:text="Run"
-                android:visibility="gone" />
+                android:orientation="horizontal">
 
-            <Button
-                android:id="@+id/micRecordButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:text="Record"
-                android:visibility="gone" />
+                <Button
+                    android:id="@+id/speechRunButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="Run"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/micRecordButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="Record"
+                    android:visibility="gone" />
+
+                <Spinner
+                    android:id="@+id/speechEnvSpinner"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="16dp"
+                    android:layout_weight="1"
+                    android:visibility="gone" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/waveformInfoTextView"

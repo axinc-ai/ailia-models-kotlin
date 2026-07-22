@@ -32,6 +32,9 @@ object ModelDownloader {
     private const val BASE_URL = "https://storage.googleapis.com/ailia-models"
     private const val BUFFER_SIZE = 64 * 1024
 
+    /** 進捗通知の間隔。数GBのモデルで通知がログ/UIを圧迫しないように間引く。 */
+    private const val PROGRESS_STEP_BYTES = 4L * 1024 * 1024
+
     const val GEMMA_2_MODEL_URL = "$BASE_URL/gemma/gemma-2-2b-it-Q4_K_M.gguf"
     const val GEMMA_3_MODEL_URL = "$BASE_URL/gemma/gemma-3-4b-it-Q4_K_M.gguf"
     const val GEMMA_3_MMPROJ_URL = "$BASE_URL/gemma/gemma-3-4b-it-GGUF_mmproj-model-f16.gguf"
@@ -82,50 +85,75 @@ object ModelDownloader {
                 listener?.onComplete(file)
                 return file
             }
-            deleteInvalidArtifacts(file)
+            deleteInvalidArtifacts(file, keepTempFile = true)
+
+            // 中断された一時ファイルが残っていればRangeリクエストで続きから再開する
+            val tempFile = File(directory, "${spec.fileName}.download")
+            var resumeOffset = if (tempFile.isFile) tempFile.length() else 0L
+            if (spec.expectedSize != null && resumeOffset > spec.expectedSize) {
+                check(tempFile.delete()) { "Failed to remove oversized temporary file: ${tempFile.absolutePath}" }
+                resumeOffset = 0L
+            }
 
             val connection = (URL(spec.url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 30_000
                 readTimeout = 120_000
                 requestMethod = "GET"
                 instanceFollowRedirects = true
+                if (resumeOffset > 0) {
+                    setRequestProperty("Range", "bytes=$resumeOffset-")
+                }
                 connect()
             }
             try {
-                check(connection.responseCode == HttpURLConnection.HTTP_OK) {
-                    "HTTP ${connection.responseCode} for ${spec.url}"
+                val resumed = resumeOffset > 0 &&
+                    connection.responseCode == HttpURLConnection.HTTP_PARTIAL
+                if (connection.responseCode != HttpURLConnection.HTTP_OK && !resumed) {
+                    // 再開リクエストが拒否された場合(416など)は一時ファイルを破棄して次回最初から取り直す
+                    if (resumeOffset > 0 && tempFile.exists() && !tempFile.delete()) {
+                        Log.w(TAG, "Failed to delete ${tempFile.absolutePath}")
+                    }
+                    error("HTTP ${connection.responseCode} for ${spec.url}")
+                }
+                if (!resumed) {
+                    // サーバーがRangeに対応しない場合などは最初からダウンロードし直す
+                    if (tempFile.exists() && !tempFile.delete()) {
+                        error("Failed to remove stale temporary file: ${tempFile.absolutePath}")
+                    }
+                    resumeOffset = 0L
+                } else {
+                    Log.i(TAG, "Resuming download of ${spec.fileName} from $resumeOffset bytes")
                 }
                 val responseSize = connection.getHeaderField("Content-Length")?.toLongOrNull()
                     ?.takeIf { it >= 0 }
-                val requiredSize = spec.expectedSize ?: responseSize
-                val tempFile = File(directory, "${spec.fileName}.download")
-                if (tempFile.exists() && !tempFile.delete()) {
-                    error("Failed to remove stale temporary file: ${tempFile.absolutePath}")
-                }
+                val requiredSize = spec.expectedSize ?: responseSize?.plus(resumeOffset)
 
-                val digest = MessageDigest.getInstance("SHA-256")
-                var downloaded = 0L
+                var downloaded = resumeOffset
+                var lastReported = -1L
                 connection.inputStream.use { input ->
-                    FileOutputStream(tempFile).use { output ->
+                    FileOutputStream(tempFile, resumed).use { output ->
                         val buffer = ByteArray(BUFFER_SIZE)
                         while (true) {
                             val count = input.read(buffer)
                             if (count < 0) break
                             if (count == 0) continue
                             output.write(buffer, 0, count)
-                            digest.update(buffer, 0, count)
                             downloaded += count
-                            listener?.onProgress(downloaded, requiredSize ?: -1L)
+                            if (downloaded - lastReported >= PROGRESS_STEP_BYTES) {
+                                listener?.onProgress(downloaded, requiredSize ?: -1L)
+                                lastReported = downloaded
+                            }
                         }
                         output.fd.sync()
                     }
                 }
+                listener?.onProgress(downloaded, requiredSize ?: -1L)
 
                 check(downloaded > 0) { "Downloaded file is empty: ${spec.fileName}" }
                 check(requiredSize == null || downloaded == requiredSize) {
                     "Size mismatch for ${spec.fileName}: expected=$requiredSize actual=$downloaded"
                 }
-                val actualSha256 = digest.digest().toHex()
+                val actualSha256 = sha256(tempFile)
                 check(spec.sha256 == null || actualSha256.equals(spec.sha256, ignoreCase = true)) {
                     "SHA-256 mismatch for ${spec.fileName}"
                 }
@@ -139,7 +167,8 @@ object ModelDownloader {
                 connection.disconnect()
             }
         } catch (e: Exception) {
-            deleteInvalidArtifacts(file)
+            // 通信断などによる失敗時は一時ファイルを残し、次回のダウンロードで再開する
+            deleteInvalidArtifacts(file, keepTempFile = true)
             val error = "Download failed for ${spec.fileName}: ${e.message}"
             Log.e(TAG, error, e)
             listener?.onError(error)
@@ -262,8 +291,16 @@ object ModelDownloader {
         }
     }
 
-    private fun deleteInvalidArtifacts(file: File) {
-        listOf(file, metadataFile(file), File(file.parentFile, "${file.name}.download"), File(file.parentFile, "${file.name}.metadata.download"))
+    private fun deleteInvalidArtifacts(file: File, keepTempFile: Boolean = false) {
+        val artifacts = mutableListOf(
+            file,
+            metadataFile(file),
+            File(file.parentFile, "${file.name}.metadata.download"),
+        )
+        if (!keepTempFile) {
+            artifacts.add(File(file.parentFile, "${file.name}.download"))
+        }
+        artifacts
             .filter(File::exists)
             .forEach { artifact ->
                 if (!artifact.delete()) Log.w(TAG, "Failed to delete ${artifact.absolutePath}")
