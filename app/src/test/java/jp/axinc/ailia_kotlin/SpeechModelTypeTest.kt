@@ -13,9 +13,9 @@ import org.junit.Test
 class SpeechModelTypeTest {
 
     @Test
-    fun enumValues_hasFourModels() {
+    fun enumValues_hasSixModels() {
         val values = SpeechModelType.values()
-        assertEquals("Should have 4 speech model types", 4, values.size)
+        assertEquals("Should have 6 speech model types", 6, values.size)
     }
 
     @Test
@@ -24,6 +24,8 @@ class SpeechModelTypeTest {
         assertTrue("Should contain WHISPER_TINY", names.contains("WHISPER_TINY"))
         assertTrue("Should contain WHISPER_BASE", names.contains("WHISPER_BASE"))
         assertTrue("Should contain WHISPER_SMALL", names.contains("WHISPER_SMALL"))
+        assertTrue("Should contain WHISPER_MEDIUM", names.contains("WHISPER_MEDIUM"))
+        assertTrue("Should contain WHISPER_LARGE_V3_TURBO", names.contains("WHISPER_LARGE_V3_TURBO"))
         assertTrue("Should contain SENSEVOICE_SMALL", names.contains("SENSEVOICE_SMALL"))
     }
 
@@ -38,6 +40,8 @@ class SpeechModelTypeTest {
         assertEquals("Whisper Tiny", SpeechModelType.WHISPER_TINY.displayName)
         assertEquals("Whisper Base", SpeechModelType.WHISPER_BASE.displayName)
         assertEquals("Whisper Small", SpeechModelType.WHISPER_SMALL.displayName)
+        assertEquals("Whisper Medium", SpeechModelType.WHISPER_MEDIUM.displayName)
+        assertEquals("Whisper Large V3 Turbo", SpeechModelType.WHISPER_LARGE_V3_TURBO.displayName)
         assertEquals("SenseVoice Small", SpeechModelType.SENSEVOICE_SMALL.displayName)
     }
 
@@ -71,6 +75,8 @@ class SpeechModelTypeTest {
         assertTrue("Whisper Tiny should need decoder", SpeechModelType.WHISPER_TINY.needsDecoder)
         assertTrue("Whisper Base should need decoder", SpeechModelType.WHISPER_BASE.needsDecoder)
         assertTrue("Whisper Small should need decoder", SpeechModelType.WHISPER_SMALL.needsDecoder)
+        assertTrue("Whisper Medium should need decoder", SpeechModelType.WHISPER_MEDIUM.needsDecoder)
+        assertTrue("Whisper Large V3 Turbo should need decoder", SpeechModelType.WHISPER_LARGE_V3_TURBO.needsDecoder)
     }
 
     @Test

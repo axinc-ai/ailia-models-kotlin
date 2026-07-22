@@ -456,7 +456,12 @@ class MainActivity : AppCompatActivity() {
         visionDisplayGeneration.incrementAndGet()
         latestCameraBitmap = null
         processingTimeTextView.text = "Processing Time: -- ms"
-        classificationResultTextView.text = "Classification Result: --"
+        // Speech2Textでは同じTextViewをSpeech Resultとして使うため表記を切り替える。
+        classificationResultTextView.text = if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
+            "Speech Result: --"
+        } else {
+            "Classification Result: --"
+        }
         trackingResultTextView.text = "Tracking Results: --"
 
         if (modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton) {
@@ -1265,6 +1270,14 @@ class MainActivity : AppCompatActivity() {
                 setupLiveModeCheckBox()
                 setupSpeechRunButton()
                 setupMicRecordButton()
+                // transcribeを呼ぶたびに処理時間表示を更新する
+                speechSample.transcribeTimeListener = { timeMs ->
+                    runOnUiThreadIfActive {
+                        if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
+                            processingTimeTextView.text = "Processing Time: $timeMs ms"
+                        }
+                    }
+                }
             }
             AlgorithmType.TEXT_TO_SPEECH -> {
                 setupVoiceGenerateButton()
@@ -3299,15 +3312,12 @@ class MainActivity : AppCompatActivity() {
                 speechExecutor.execute {
                     try {
                         val audio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.demo))
-                        val startTime = System.nanoTime()
+                        // 処理時間はtranscribeTimeListenerがtranscribeごとに更新する
                         val lines = speechSample.process(audio.audioData, audio.channels, audio.sampleRate)
-                        val endTime = System.nanoTime()
-                        val timeMs = (endTime - startTime) / 1000000
                         runOnUiThreadIfActive {
                             appendTranscriptLines(lines)
                             classificationResultTextView.text =
                                 if (lines.isEmpty()) "Speech Result: (no speech detected)" else "Speech Result:"
-                            processingTimeTextView.text = "Processing Time: $timeMs ms"
                         }
                     } catch (e: Exception) {
                         Log.e("AILIA_Main", "Speech run error", e)
@@ -3374,7 +3384,7 @@ class MainActivity : AppCompatActivity() {
             ) {
                 runOnUiThreadIfActive {
                     appendTranscriptLines(lines)
-                    processingTimeTextView.text = "Processing Time: $processingTimeMs ms"
+                    // 処理時間はtranscribeTimeListenerがtranscribeごとに更新する
                     if (isFinal) {
                         speechIntermediateText = null
                         updateTranscriptDisplay()

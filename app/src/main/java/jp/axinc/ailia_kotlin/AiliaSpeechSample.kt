@@ -53,6 +53,22 @@ enum class SpeechModelType(
         "decoder_small.onnx",
         AiliaSpeech.AILIA_SPEECH_MODEL_TYPE_WHISPER_MULTILINGUAL_SMALL
     ),
+    WHISPER_MEDIUM(
+        "Whisper Medium",
+        "https://storage.googleapis.com/ailia-models/whisper/encoder_medium.opt3.onnx",
+        "encoder_medium.onnx",
+        "https://storage.googleapis.com/ailia-models/whisper/decoder_medium_fix_kv_cache.opt3.onnx",
+        "decoder_medium.onnx",
+        AiliaSpeech.AILIA_SPEECH_MODEL_TYPE_WHISPER_MULTILINGUAL_MEDIUM
+    ),
+    WHISPER_LARGE_V3_TURBO(
+        "Whisper Large V3 Turbo",
+        "https://storage.googleapis.com/ailia-models/whisper/encoder_turbo.opt.onnx",
+        "encoder_turbo.onnx",
+        "https://storage.googleapis.com/ailia-models/whisper/decoder_turbo_fix_kv_cache.opt.onnx",
+        "decoder_turbo.onnx",
+        AiliaSpeech.AILIA_SPEECH_MODEL_TYPE_WHISPER_MULTILINGUAL_LARGE_V3
+    ),
     SENSEVOICE_SMALL(
         "SenseVoice Small",
         "https://storage.googleapis.com/ailia-models/sensevoice/sensevoice_small.onnx",
@@ -104,6 +120,10 @@ class AiliaSpeechSample(private val modelDirectory: File) {
 
     /** 認識言語("ja"/"en"など)。"auto"の場合は自動判定(setLanguageを呼ばない) */
     var language: String = "ja"
+
+    /** transcribeを1回実行するたびに所要時間(ms)を通知する。バックグラウンドスレッドで呼ばれる。 */
+    @Volatile
+    var transcribeTimeListener: ((Long) -> Unit)? = null
 
     /**
      * Downloads model files for the specified (or current) speech model type.
@@ -234,11 +254,21 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             Log.i(TAG, "Speech process: audio.size=${audio.size}, channels=$channels, sampleRate=$sampleRate, samples=${audio.size / channels}")
             requireSuccess("pushInputData", engine.pushInputData(audio, channels, audio.size / channels, sampleRate))
             requireSuccess("finalizeInputData", engine.finalizeInputData())
-            requireSuccess("transcribe", engine.transcribe())
-            val lines = collectTextLines(engine)
+            val lines = mutableListOf<String>()
+            while (engine.getComplete() == 0) {
+                transcribeOnce(engine)
+                lines.addAll(collectTextLines(engine))
+            }
             requireSuccess("resetTranscribeState", engine.resetTranscribeState())
             lines
         }
+    }
+
+    /** transcribeを1回実行し、その所要時間を[transcribeTimeListener]へ通知する。 */
+    private fun transcribeOnce(engine: AiliaSpeech) {
+        val startNanos = System.nanoTime()
+        requireSuccess("transcribe", engine.transcribe())
+        transcribeTimeListener?.invoke((System.nanoTime() - startNanos) / 1_000_000)
     }
 
     /**
@@ -252,7 +282,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             requireSuccess("pushInputData", engine.pushInputData(audio, channels, audio.size / channels, sampleRate))
             val lines = mutableListOf<String>()
             while (engine.getBuffered() != 0) {
-                requireSuccess("transcribe", engine.transcribe())
+                transcribeOnce(engine)
                 lines.addAll(collectTextLines(engine))
             }
             lines
@@ -269,7 +299,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             requireSuccess("finalizeInputData", engine.finalizeInputData())
             val lines = mutableListOf<String>()
             while (engine.getComplete() == 0) {
-                requireSuccess("transcribe", engine.transcribe())
+                transcribeOnce(engine)
                 lines.addAll(collectTextLines(engine))
             }
             requireSuccess("resetTranscribeState", engine.resetTranscribeState())
