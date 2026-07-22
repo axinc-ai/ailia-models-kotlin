@@ -208,6 +208,13 @@ class AiliaSpeechSample(private val modelDirectory: File) {
             }
             requireSuccess("openModel", engine.openModel(encoderPath, decoderPath, currentModelType.modelTypeId))
 
+            if (qnnSelected) {
+                // QNNは初回推論時にグラフを構築するため、事前にウォームアップして初回transcribeの遅延を抑える
+                val warmupStartNanos = System.nanoTime()
+                requireSuccess("warmup", engine.warmup())
+                Log.i(TAG, "QNN warmup finished in ${(System.nanoTime() - warmupStartNanos) / 1_000_000} ms")
+            }
+
             // 言語設定("auto"は自動判定のためsetLanguageを呼ばない。Flutter版と同じ挙動)
             if (language != "auto") {
                 val langResult = engine.setLanguage(language)
