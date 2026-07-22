@@ -27,7 +27,9 @@ enum class SpeechModelType(
     val decoderUrl: String,
     val decoderFileName: String,
     val modelTypeId: Int,
-    val needsDecoder: Boolean = true
+    val needsDecoder: Boolean = true,
+    /** onnx本体以外に必要な追加ファイル(外部weightなど)。ファイル名はonnx内の参照名と一致させること。 */
+    val extraFiles: List<ModelFileSpec> = emptyList(),
 ) {
     WHISPER_TINY(
         "Whisper Tiny",
@@ -67,7 +69,14 @@ enum class SpeechModelType(
         "encoder_turbo.onnx",
         "https://storage.googleapis.com/ailia-models/whisper/decoder_turbo_fix_kv_cache.opt.onnx",
         "decoder_turbo.onnx",
-        AiliaSpeech.AILIA_SPEECH_MODEL_TYPE_WHISPER_MULTILINGUAL_LARGE_V3
+        AiliaSpeech.AILIA_SPEECH_MODEL_TYPE_WHISPER_MULTILINGUAL_LARGE_V3,
+        // encoderのweightは外部ファイル参照のため別途ダウンロードする(約2.5GB)
+        extraFiles = listOf(
+            ModelFileSpec(
+                "https://storage.googleapis.com/ailia-models/whisper/encoder_turbo_weights.opt.pb",
+                "encoder_turbo_weights.opt.pb"
+            )
+        ),
     ),
     SENSEVOICE_SMALL(
         "SenseVoice Small",
@@ -145,6 +154,9 @@ class AiliaSpeechSample(private val modelDirectory: File) {
                     ModelFileSpec(modelType.decoderUrl, modelType.decoderFileName),
                     listener,
                 ) != null)
+            }
+            for (extraFile in modelType.extraFiles) {
+                check(ModelDownloader.downloadFile(modelDirectory, extraFile, listener) != null)
             }
             // Always download VAD model
             Log.i(TAG, "Downloading VAD model...")

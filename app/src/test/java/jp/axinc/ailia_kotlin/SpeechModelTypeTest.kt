@@ -135,6 +135,27 @@ class SpeechModelTypeTest {
     }
 
     @Test
+    fun whisperLargeV3Turbo_requiresExternalWeights() {
+        val extras = SpeechModelType.WHISPER_LARGE_V3_TURBO.extraFiles
+        assertEquals("Turbo should have one extra file", 1, extras.size)
+        // onnx内の外部データ参照名と一致している必要がある
+        assertEquals("encoder_turbo_weights.opt.pb", extras[0].fileName)
+        assertTrue(
+            "Turbo weights URL should start with https://",
+            extras[0].url.startsWith("https://")
+        )
+    }
+
+    @Test
+    fun otherModels_haveNoExtraFiles() {
+        for (model in SpeechModelType.values()) {
+            if (model != SpeechModelType.WHISPER_LARGE_V3_TURBO) {
+                assertTrue("${model.name} should have no extra files", model.extraFiles.isEmpty())
+            }
+        }
+    }
+
+    @Test
     fun encoderFileNames_endWithOnnx() {
         for (model in SpeechModelType.values()) {
             assertTrue(
