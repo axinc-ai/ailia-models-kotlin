@@ -109,7 +109,7 @@ class AiliaSpeechSample(private val modelDirectory: File) {
         private const val DIARIZATION_SEGMENTATION_FILE = "segmentation.onnx"
         private const val DIARIZATION_EMBEDDING_FILE = "speaker-embedding.onnx"
         /** QNN実行時にSenseVoiceの入力シェイプを固定する長さ(秒) */
-        private const val QNN_STATIC_INPUT_LENGTH_SEC = 10
+        private const val QNN_STATIC_INPUT_LENGTH_SEC = 11
     }
 
     private var speech: AiliaSpeech? = null
