@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var trackingResultTextView: TextView
     private lateinit var voiceInputEditText: EditText
     private lateinit var voiceEnvSpinner: Spinner
+    private lateinit var speechEnvSpinner: Spinner
     private lateinit var voiceReplayButton: Button
     private lateinit var voiceStatusTextView: TextView
     private lateinit var voiceGenerateButton: Button
@@ -293,6 +294,7 @@ class MainActivity : AppCompatActivity() {
         trackingResultTextView = findViewById(R.id.trackingResultTextView)
         voiceInputEditText = findViewById(R.id.voiceInputEditText)
         voiceEnvSpinner = findViewById(R.id.voiceEnvSpinner)
+        speechEnvSpinner = findViewById(R.id.speechEnvSpinner)
         voiceReplayButton = findViewById(R.id.voiceReplayButton)
         voiceStatusTextView = findViewById(R.id.voiceStatusTextView)
         voiceGenerateButton = findViewById(R.id.voiceGenerateButton)
@@ -456,7 +458,12 @@ class MainActivity : AppCompatActivity() {
         visionDisplayGeneration.incrementAndGet()
         latestCameraBitmap = null
         processingTimeTextView.text = "Processing Time: -- ms"
-        classificationResultTextView.text = "Classification Result: --"
+        // Speech2Textでは同じTextViewをSpeech Resultとして使うため表記を切り替える。
+        classificationResultTextView.text = if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
+            "Speech Result: --"
+        } else {
+            "Classification Result: --"
+        }
         trackingResultTextView.text = "Tracking Results: --"
 
         if (modeRadioGroup.checkedRadioButtonId == R.id.cameraRadioButton) {
@@ -595,7 +602,6 @@ class MainActivity : AppCompatActivity() {
                 setupOnnxEnvSpinner(useBlas = false)
             }
 
-            AlgorithmType.SPEECH_TO_TEXT,
             AlgorithmType.SPEAKER_VERIFICATION,
             AlgorithmType.VOICE_FILTER -> {
                 setupOnnxEnvSpinner(useBlas = true, fallbackToCpu = true)
@@ -603,6 +609,12 @@ class MainActivity : AppCompatActivity() {
 
             AlgorithmType.TOKENIZE -> {
                 setupOnnxEnvSpinner(useBlas = true)
+            }
+
+            AlgorithmType.SPEECH_TO_TEXT -> {
+                // Speech2Textのバックエンド選択はRun/Recordボタンの右側に表示する
+                envSpinner.visibility = View.GONE
+                setupOnnxEnvSpinner(useBlas = true, target = speechEnvSpinner)
             }
 
             AlgorithmType.TEXT_TO_SPEECH -> {
@@ -1035,6 +1047,7 @@ class MainActivity : AppCompatActivity() {
         liveModeCheckBox,
         speechRunButton,
         micRecordButton,
+        speechEnvSpinner,
         waveformView,
         waveformInfoTextView,
         voiceWaveformView,
@@ -1084,6 +1097,7 @@ class MainActivity : AppCompatActivity() {
             transcriptTextView,
             speechModeRadioGroup,
             diarizationCheckBox,
+            speechEnvSpinner,
         )
         if (isMicMode) {
             speechViews.addAll(
@@ -1284,6 +1298,14 @@ class MainActivity : AppCompatActivity() {
                 setupLiveModeCheckBox()
                 setupSpeechRunButton()
                 setupMicRecordButton()
+                // transcribeを呼ぶたびに処理時間表示を更新する
+                speechSample.transcribeTimeListener = { timeMs ->
+                    runOnUiThreadIfActive {
+                        if (currentAlgorithm == AlgorithmType.SPEECH_TO_TEXT) {
+                            processingTimeTextView.text = "Processing Time: $timeMs ms"
+                        }
+                    }
+                }
             }
             AlgorithmType.TEXT_TO_SPEECH -> {
                 setupVoiceGenerateButton()
@@ -1683,6 +1705,7 @@ class MainActivity : AppCompatActivity() {
         modelSpinner.isEnabled = enabled
         envSpinner.isEnabled = enabled
         voiceEnvSpinner.isEnabled = enabled
+        speechEnvSpinner.isEnabled = enabled
         modeRadioGroup.isEnabled = enabled
         for (index in 0 until modeRadioGroup.childCount) {
             modeRadioGroup.getChildAt(index).isEnabled = enabled
@@ -3318,15 +3341,12 @@ class MainActivity : AppCompatActivity() {
                 speechExecutor.execute {
                     try {
                         val audio: AudioUtil.WavFileData = AudioUtil().loadRawAudio(this.resources.openRawResource(R.raw.demo))
-                        val startTime = System.nanoTime()
+                        // 処理時間はtranscribeTimeListenerがtranscribeごとに更新する
                         val lines = speechSample.process(audio.audioData, audio.channels, audio.sampleRate)
-                        val endTime = System.nanoTime()
-                        val timeMs = (endTime - startTime) / 1000000
                         runOnUiThreadIfActive {
                             appendTranscriptLines(lines)
                             classificationResultTextView.text =
                                 if (lines.isEmpty()) "Speech Result: (no speech detected)" else "Speech Result:"
-                            processingTimeTextView.text = "Processing Time: $timeMs ms"
                         }
                     } catch (e: Exception) {
                         Log.e("AILIA_Main", "Speech run error", e)
@@ -3393,7 +3413,7 @@ class MainActivity : AppCompatActivity() {
             ) {
                 runOnUiThreadIfActive {
                     appendTranscriptLines(lines)
-                    processingTimeTextView.text = "Processing Time: $processingTimeMs ms"
+                    // 処理時間はtranscribeTimeListenerがtranscribeごとに更新する
                     if (isFinal) {
                         speechIntermediateText = null
                         updateTranscriptDisplay()
