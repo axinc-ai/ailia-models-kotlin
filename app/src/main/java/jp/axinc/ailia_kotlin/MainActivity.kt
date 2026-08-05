@@ -546,7 +546,7 @@ class MainActivity : AppCompatActivity() {
                 ailiaEnvironments = AiliaModel.getEnvironments()
             }
             val environments = ailiaEnvironments!!.map {
-                BackendEnvironment("${it.name} (id:${it.id})", it.id)
+                BackendEnvironment(it.toBackendDisplayName(), it.id)
             }.toMutableList()
             if (allowOnnxRuntime) {
                 environments += BackendEnvironment(
