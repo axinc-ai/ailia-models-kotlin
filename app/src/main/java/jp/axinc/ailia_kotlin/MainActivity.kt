@@ -521,11 +521,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupOnnxEnvSpinner(useBlas: Boolean, target: Spinner = envSpinner) {
+    private fun setupOnnxEnvSpinner(
+        useBlas: Boolean,
+        target: Spinner = envSpinner,
+        fallbackToCpu: Boolean = false,
+    ) {
         try {
             if (ailiaEnvironments == null) {
                 Ailia.SetTemporaryCachePath(cacheDir.absolutePath)
-                ailiaEnvironments = AiliaModel.getEnvironments()
+                ailiaEnvironments = AiliaModel.getEnvironments().filter {
+                    isSelectableAiliaEnvironment(it.name)
+                }
             }
             val envNames = ailiaEnvironments!!.map { "${it.name} (id:${it.id})" }.toTypedArray()
             val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, envNames)
@@ -535,11 +541,17 @@ class MainActivity : AppCompatActivity() {
             var defaultIndex = 0
             if (useBlas) {
                 // デフォルトはBLAS (CPU-OpenBlas)
-                for ((index, env) in ailiaEnvironments!!.withIndex()) {
-                    if (env.name.contains("OpenBlas", ignoreCase = true)) {
-                        defaultIndex = index
-                        break
-                    }
+                val blasIndex = ailiaEnvironments!!.indexOfFirst {
+                    it.type == AiliaEnvironment.TYPE_BLAS ||
+                        it.name.contains("OpenBlas", ignoreCase = true)
+                }
+                if (blasIndex >= 0) {
+                    defaultIndex = blasIndex
+                } else if (fallbackToCpu) {
+                    // QNN版にはBLASがないため、先頭のQNNではなく通常CPUを選ぶ。
+                    defaultIndex = preferredBlasThenCpuEnvironmentIndex(
+                        ailiaEnvironments!!.map { it.type },
+                    )
                 }
             } else {
                 // デフォルトはGPU
@@ -591,7 +603,10 @@ class MainActivity : AppCompatActivity() {
             }
 
             AlgorithmType.SPEAKER_VERIFICATION,
-            AlgorithmType.VOICE_FILTER,
+            AlgorithmType.VOICE_FILTER -> {
+                setupOnnxEnvSpinner(useBlas = true, fallbackToCpu = true)
+            }
+
             AlgorithmType.TOKENIZE -> {
                 setupOnnxEnvSpinner(useBlas = true)
             }
@@ -605,7 +620,11 @@ class MainActivity : AppCompatActivity() {
             AlgorithmType.TEXT_TO_SPEECH -> {
                 // TTSのバックエンド選択はGenerateボタンの右側に表示する
                 envSpinner.visibility = View.GONE
-                setupOnnxEnvSpinner(useBlas = true, target = voiceEnvSpinner)
+                setupOnnxEnvSpinner(
+                    useBlas = true,
+                    target = voiceEnvSpinner,
+                    fallbackToCpu = true,
+                )
             }
 
             AlgorithmType.OBJECT_DETECTION, AlgorithmType.CLASSIFICATION, AlgorithmType.TRACKING -> {
@@ -3825,4 +3844,17 @@ internal fun formatDownloadProgress(
     }
     return listOfNotNull("Downloading", fileName?.takeIf { it.isNotBlank() }, sizeText)
         .joinToString(" ")
+}
+
+/** QNN-HTPは公開し、現在使用しないQNN-GPUだけを環境選択から除外する。 */
+internal fun isSelectableAiliaEnvironment(name: String): Boolean =
+    !(name.contains("QNN", ignoreCase = true) && name.contains("GPU", ignoreCase = true))
+
+/** BLASを優先し、利用できない構成ではQNNではなく通常CPUを選ぶ。 */
+internal fun preferredBlasThenCpuEnvironmentIndex(environmentTypes: List<Int>): Int {
+    val blasIndex = environmentTypes.indexOfFirst { it == AiliaEnvironment.TYPE_BLAS }
+    if (blasIndex >= 0) return blasIndex
+
+    val cpuIndex = environmentTypes.indexOfFirst { it == AiliaEnvironment.TYPE_CPU }
+    return cpuIndex.coerceAtLeast(0)
 }
