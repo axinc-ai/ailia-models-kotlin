@@ -1,6 +1,7 @@
 package jp.axinc.ailia_kotlin
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -11,6 +12,7 @@ import android.graphics.Paint
 import android.os.Bundle
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
@@ -136,7 +138,7 @@ class MainActivity : AppCompatActivity() {
     private var useDetr = false
 
     private var selectedEnvId: Int = 0
-    private var selectedRuntime: String = "TFLite"
+    private var selectedRuntime: String = if (ONNX_RUNTIME_ONLY) "ONNX" else "TFLite"
     private var useOnnxRuntime = false
     private var ailiaEnvironments: List<AiliaEnvironment>? = null
     private var isInitialized = false
@@ -244,6 +246,19 @@ class MainActivity : AppCompatActivity() {
         private const val REQUEST_CODE_CAMERA_PERMISSION = 10
         private const val REQUEST_CODE_AUDIO_PERMISSION = 11
         private const val ONNX_RUNTIME_ENV_ID = Int.MIN_VALUE
+
+        /**
+         * ORTビルド: ONNX Runtimeを選択できないアルゴリズム/モデルをスピナーで選択不可にする。
+         */
+        private const val ONNX_RUNTIME_ONLY = true
+
+        /** ONNX Runtimeで実行できないアルゴリズム(ailia Speech / Voice / LLM専用) */
+        private val ALGORITHMS_WITHOUT_ONNX_RUNTIME = setOf(
+            AlgorithmType.SPEECH_TO_TEXT,
+            AlgorithmType.TEXT_TO_SPEECH,
+            AlgorithmType.LLM,
+            AlgorithmType.MULTIMODAL_LLM,
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -348,6 +363,41 @@ class MainActivity : AppCompatActivity() {
         voiceFilterPlayOutputButton = findViewById(R.id.voiceFilterPlayOutputButton)
     }
 
+    /**
+     * 項目ごとに選択可否を指定できるスピナー用アダプタ。
+     * 選択不可の項目はドロップダウンでグレー表示になり、タップしても選択されない。
+     */
+    private class SelectableArrayAdapter(
+        context: Context,
+        itemLayout: Int,
+        private val items: Array<String>,
+        private val enabledFlags: BooleanArray,
+    ) : ArrayAdapter<String>(context, itemLayout, items) {
+        init {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+
+        override fun areAllItemsEnabled(): Boolean = enabledFlags.all { it }
+
+        override fun isEnabled(position: Int): Boolean = enabledFlags.getOrElse(position) { true }
+
+        override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val view = super.getDropDownView(position, convertView, parent)
+            val enabled = isEnabled(position)
+            view.isEnabled = enabled
+            view.alpha = if (enabled) 1.0f else 0.4f
+            (view as? TextView)?.text = if (enabled) items[position] else "${items[position]} (ORT N/A)"
+            return view
+        }
+    }
+
+    private fun isAlgorithmSelectable(algorithm: AlgorithmType): Boolean =
+        !ONNX_RUNTIME_ONLY || algorithm !in ALGORITHMS_WITHOUT_ONNX_RUNTIME
+
+    /** TFLiteモデル項目はONNX Runtimeで実行できないためORTビルドでは選択不可 */
+    private fun isModelItemSelectable(label: String): Boolean =
+        !ONNX_RUNTIME_ONLY || !label.contains("(TFLite)")
+
     private fun setupModeSelection() {
         val algorithms = arrayOf(
             "PoseEstimation",
@@ -365,8 +415,11 @@ class MainActivity : AppCompatActivity() {
         )
 
         // 全体メニュー風の見た目にするため専用のitemレイアウト(白太字・中央寄せ)を使う
-        val adapter = ArrayAdapter(this, R.layout.spinner_item_menu, algorithms)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        // ORTビルドではONNX Runtime非対応のアルゴリズムを選択不可にする
+        val algorithmEnabled = BooleanArray(algorithms.size) { index ->
+            isAlgorithmSelectable(AlgorithmType.values()[index])
+        }
+        val adapter = SelectableArrayAdapter(this, R.layout.spinner_item_menu, algorithms, algorithmEnabled)
         algorithmSpinner.adapter = adapter
 
         algorithmSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -549,11 +602,17 @@ class MainActivity : AppCompatActivity() {
                 BackendEnvironment(it.toBackendDisplayName(), it.id)
             }.toMutableList()
             if (allowOnnxRuntime) {
-                environments += BackendEnvironment(
+                val onnxRuntimeEnvironment = BackendEnvironment(
                     displayName = "ONNX Runtime (CPU)",
                     envId = ONNX_RUNTIME_ENV_ID,
                     isOnnxRuntime = true,
                 )
+                // ORTビルドではONNX Runtimeを先頭に置きデフォルトにする。ailiaは後ろに並べる
+                if (ONNX_RUNTIME_ONLY) {
+                    environments.add(0, onnxRuntimeEnvironment)
+                } else {
+                    environments += onnxRuntimeEnvironment
+                }
             } else {
                 useOnnxRuntime = false
             }
@@ -566,24 +625,25 @@ class MainActivity : AppCompatActivity() {
             target.adapter = adapter
 
             var defaultIndex = 0
-            if (allowOnnxRuntime && useOnnxRuntime) {
+            if (allowOnnxRuntime && (useOnnxRuntime || ONNX_RUNTIME_ONLY)) {
+                // ORTビルド、またはユーザーがONNX Runtimeを選択済みならONNX Runtimeをデフォルトにする
                 defaultIndex = environments.indexOfFirst { it.isOnnxRuntime }.coerceAtLeast(0)
             } else if (useBlas) {
                 // デフォルトはBLAS (CPU-OpenBlas)
-                for ((index, env) in ailiaEnvironments!!.withIndex()) {
-                    if (env.name.contains("OpenBlas", ignoreCase = true)) {
-                        defaultIndex = index
-                        break
-                    }
-                }
+                defaultIndex = environments.indexOfFirst { candidate ->
+                    !candidate.isOnnxRuntime &&
+                        ailiaEnvironments!!.any { it.id == candidate.envId && it.name.contains("OpenBlas", ignoreCase = true) }
+                }.coerceAtLeast(0)
             } else {
                 // デフォルトはGPU
-                for ((index, env) in ailiaEnvironments!!.withIndex()) {
-                    if (env.type == AiliaEnvironment.TYPE_GPU && env.props and AiliaEnvironment.PROPERTY_FP16 == 0) {
-                        defaultIndex = index
-                        break
-                    }
-                }
+                defaultIndex = environments.indexOfFirst { candidate ->
+                    !candidate.isOnnxRuntime &&
+                        ailiaEnvironments!!.any {
+                            it.id == candidate.envId &&
+                                it.type == AiliaEnvironment.TYPE_GPU &&
+                                it.props and AiliaEnvironment.PROPERTY_FP16 == 0
+                        }
+                }.coerceAtLeast(0)
             }
             target.setSelection(defaultIndex)
             selectedEnvId = environments[defaultIndex].envId
@@ -771,8 +831,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        val itemEnabled = BooleanArray(items.size) { isModelItemSelectable(items[it]) }
+        if (selectedIndex in items.indices && !itemEnabled[selectedIndex]) {
+            selectedIndex = itemEnabled.indexOfFirst { it }.coerceAtLeast(0)
+        }
+        val adapter = SelectableArrayAdapter(this, android.R.layout.simple_spinner_item, items, itemEnabled)
         modelSpinner.onItemSelectedListener = null
         modelSpinner.adapter = adapter
         if (selectedIndex in items.indices) {
@@ -780,6 +843,7 @@ class MainActivity : AppCompatActivity() {
         }
         modelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (!itemEnabled.getOrElse(position) { true }) return
                 onModelSelected(algorithm, position)
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
